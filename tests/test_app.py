@@ -4,7 +4,7 @@ from streamlit.testing.v1 import AppTest
 def test_app_starts_offline_with_cached_demo():
     app = AppTest.from_file("app.py", default_timeout=30).run()
     assert not app.exception
-    assert any("TrialScopeAI" in item.value for item in app.markdown)
+    assert any("TrialScope" in item.value for item in app.markdown)
     assert len(app.metric) >= 4
 
 
@@ -21,3 +21,11 @@ def test_analysis_page_renders_offline():
     app.radio[0].set_value("招募分析").run(timeout=40)
     assert not app.exception
     assert any(item.label == "运行情景比较" for item in app.button)
+
+
+def test_review_table_can_be_saved_without_losing_hidden_fields():
+    app = AppTest.from_file("app.py", default_timeout=30).run()
+    app.radio[0].set_value("标准解析").run()
+    next(item for item in app.button if item.label == "确认并保存审核结果").click().run()
+    assert not app.exception
+    assert len(app.session_state["criteria"]) == 27

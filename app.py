@@ -1,10 +1,11 @@
-"""TrialScopeAI Streamlit application."""
+"""TrialScope clinical recruitment feasibility workspace."""
 
 from __future__ import annotations
 
 import json
 import os
 from collections import Counter
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,6 @@ from src.analytics import (
     missing_field_counts,
     representation_table,
     scenario_comparison,
-    status_counts,
 )
 from src.config import (
     DATA_DIR,
@@ -47,65 +47,14 @@ from src.trial_sources import (
 
 
 st.set_page_config(
-    page_title="TrialScopeAI",
-    page_icon="🫁",
+    page_title="TrialScope | 招募可行性评估",
+    page_icon="T",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-
-APP_CSS = """
-<style>
-    .stApp { background: linear-gradient(180deg, #F7FAFC 0%, #FFFFFF 45%); }
-    .hero {
-        padding: 2.1rem 2.3rem;
-        border-radius: 24px;
-        background: linear-gradient(125deg, #073B4C 0%, #087F8C 65%, #11A5A8 100%);
-        color: white;
-        box-shadow: 0 16px 45px rgba(7, 59, 76, .18);
-        margin-bottom: 1.2rem;
-    }
-    .hero h1 { color: white; font-size: 2.55rem; margin: 0 0 .45rem 0; letter-spacing: -.03em; }
-    .hero p { color: #E6FAFC; max-width: 780px; font-size: 1.08rem; line-height: 1.75; margin: 0; }
-    .eyebrow { font-size: .78rem; letter-spacing: .13em; font-weight: 700; color: #A8EFF0; margin-bottom: .55rem; }
-    .soft-card {
-        border: 1px solid #D8E7EC;
-        border-radius: 18px;
-        padding: 1rem 1.15rem;
-        background: rgba(255,255,255,.92);
-        min-height: 136px;
-    }
-    .soft-card h4 { margin: .15rem 0 .45rem 0; color: #0B5163; }
-    .soft-card p { color: #52697A; line-height: 1.55; }
-    .boundary {
-        border-left: 4px solid #F4A261;
-        background: #FFF8EE;
-        color: #734D22;
-        padding: .85rem 1rem;
-        border-radius: 8px;
-        margin: .6rem 0 1rem 0;
-    }
-    .source-chip {
-        display: inline-block;
-        padding: .28rem .65rem;
-        border-radius: 999px;
-        background: #DFF4F5;
-        color: #0A6670;
-        font-size: .8rem;
-        font-weight: 650;
-        margin-right: .35rem;
-    }
-    div[data-testid="stMetric"] {
-        background: white;
-        border: 1px solid #DDE9ED;
-        padding: .8rem 1rem;
-        border-radius: 16px;
-        box-shadow: 0 5px 18px rgba(33, 70, 84, .05);
-    }
-    .footer-note { color: #718394; font-size: .82rem; line-height: 1.55; }
-</style>
-"""
-st.markdown(APP_CSS, unsafe_allow_html=True)
+APP_CSS = (Path(__file__).parent / "assets" / "styles.css").read_text(encoding="utf-8")
+st.markdown(f"<style>{APP_CSS}</style>", unsafe_allow_html=True)
 
 
 @st.cache_data
@@ -140,7 +89,6 @@ def init_state() -> None:
     defaults = {
         "source": demo_source,
         "criteria_text": demo_source.criteria_text,
-        "criteria_editor": demo_source.criteria_text,
         "criteria": load_cached_demo_criteria(),
         "patients": load_patients(),
         "results": None,
@@ -170,6 +118,54 @@ def set_source(source: TrialSource, criteria_text: str | None = None) -> None:
         st.session_state.last_parse_note = "请进入“标准解析”步骤生成结构化标准。"
 
 
+KIND_LABELS = {"inclusion": "入组", "exclusion": "排除"}
+EXECUTION_LABELS = {"automated": "自动判断", "human_review": "人工确认"}
+OPERATOR_LABELS = {
+    "eq": "等于",
+    "neq": "不等于",
+    "lt": "小于",
+    "lte": "小于等于",
+    "gt": "大于",
+    "gte": "大于等于",
+    "between": "区间",
+    "in": "属于",
+    "not_in": "不属于",
+    "is_true": "是",
+    "is_false": "否",
+    "within_days": "时间窗内",
+    "exists": "需要记录",
+    "human_review": "人工判断",
+}
+FIELD_LABELS = {
+    "age": "年龄",
+    "copd_diagnosis": "COPD 诊断",
+    "smoking_pack_years": "吸烟包年",
+    "post_bd_fev1_pct_predicted": "支气管舒张后 FEV1 预计值百分比",
+    "post_bd_fev1_liters": "支气管舒张后 FEV1 容量",
+    "post_bd_fev1_fvc": "支气管舒张后 FEV1/FVC",
+    "spirometry_reproducible": "肺功能检查可重复性",
+    "contraception_confirmed": "避孕要求确认",
+    "informed_consent_confirmed": "知情同意确认",
+    "visit_adherence_confirmed": "访视依从性确认",
+    "prior_sun101": "既往 SUN-101 使用",
+    "severe_comorbidity_concern": "严重合并症风险",
+    "days_since_copd_exacerbation": "距 COPD 急性加重天数",
+    "oxygen_hours_per_day": "每日氧疗时长",
+    "days_since_respiratory_infection": "距呼吸道感染天数",
+    "days_since_systemic_steroids": "距全身激素治疗天数",
+    "other_significant_respiratory_disease": "其他重要呼吸系统疾病",
+    "malignancy_within_5y": "5 年内恶性肿瘤",
+    "bladder_outflow_obstruction_within_6m": "6 个月内膀胱流出道梗阻",
+    "narrow_angle_glaucoma": "窄角型青光眼",
+    "qtc_ms": "QTc 间期",
+    "investigational_drug_within_30d": "30 天内试验药物使用",
+    "study_drug_class_hypersensitivity": "同类药物超敏反应",
+    "aerosol_medication_hypersensitivity": "吸入制剂超敏反应",
+    "substance_abuse_within_3m": "3 个月内物质滥用",
+    "psychiatric_completion_concern": "精神心理因素影响完成试验",
+}
+
+
 def criteria_to_frame(criteria: list[Criterion]) -> pd.DataFrame:
     rows = []
     for criterion in criteria:
@@ -178,6 +174,17 @@ def criteria_to_frame(criteria: list[Criterion]) -> pd.DataFrame:
         item["applicability"] = json.dumps(item.get("applicability", {}), ensure_ascii=False)
         rows.append(item)
     return pd.DataFrame(rows)
+
+
+def criteria_to_review_frame(criteria: list[Criterion]) -> pd.DataFrame:
+    frame = criteria_to_frame(criteria)
+    frame["kind"] = frame["kind"].map(KIND_LABELS).fillna(frame["kind"])
+    frame["operator"] = frame["operator"].map(OPERATOR_LABELS).fillna(frame["operator"])
+    frame["execution_status"] = (
+        frame["execution_status"].map(EXECUTION_LABELS).fillna(frame["execution_status"])
+    )
+    frame["field"] = frame["field"].map(FIELD_LABELS).fillna(frame["field"])
+    return frame
 
 
 def criteria_from_frame(frame: pd.DataFrame) -> list[Criterion]:
@@ -196,6 +203,66 @@ def criteria_from_frame(frame: pd.DataFrame) -> list[Criterion]:
     return output
 
 
+def criteria_from_review_frame(frame: pd.DataFrame) -> list[Criterion]:
+    normalized = frame.copy()
+    normalized["kind"] = normalized["kind"].replace({value: key for key, value in KIND_LABELS.items()})
+    normalized["operator"] = normalized["operator"].replace(
+        {value: key for key, value in OPERATOR_LABELS.items()}
+    )
+    normalized["execution_status"] = normalized["execution_status"].replace(
+        {value: key for key, value in EXECUTION_LABELS.items()}
+    )
+    normalized["field"] = normalized["field"].replace(
+        {value: key for key, value in FIELD_LABELS.items()}
+    )
+    return criteria_from_frame(normalized)
+
+
+def result_summary(result: Any) -> str:
+    if result.overall_status == "eligible":
+        return "全部可执行标准均通过"
+    if result.overall_status == "ineligible":
+        ids = result.failed_criteria
+        suffix = "、".join(ids[:4]) + (" 等" if len(ids) > 4 else "")
+        return f"未满足 {len(ids)} 项标准：{suffix}"
+    if result.overall_status == "missing_data":
+        fields = sorted(
+            {
+                FIELD_LABELS.get(item.field, item.field or "未定义字段")
+                for item in result.evidences
+                if item.status == "missing"
+            }
+        )
+        return "需要补充：" + "、".join(fields[:3])
+    return f"{len(result.review_criteria)} 项标准需要研究者确认"
+
+
+def display_value(value: Any) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "—"
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    if isinstance(value, (list, dict, tuple)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def results_to_display_frame(results: list[Any]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "patient_id": result.patient_id,
+                "overall_status": STATUS_LABELS[result.overall_status],
+                "summary": result_summary(result),
+                "failed_count": len(result.failed_criteria),
+                "missing_count": len(result.missing_criteria),
+                "review_count": len(result.review_criteria),
+            }
+            for result in results
+        ]
+    )
+
+
 def criteria_json_bytes(criteria: list[Criterion]) -> bytes:
     return json.dumps(
         [item.model_dump(mode="json") for item in criteria],
@@ -211,81 +278,158 @@ def ensure_results() -> None:
         )
 
 
-def hero(title: str, subtitle: str, eyebrow: str = "TRIALSCOPEAI") -> None:
+def page_header(title: str, subtitle: str, kicker: str) -> None:
     st.markdown(
         f"""
-        <div class="hero">
-            <div class="eyebrow">{eyebrow}</div>
-            <h1>{title}</h1>
-            <p>{subtitle}</p>
+        <div class="ts-page-header">
+            <div class="ts-kicker">{escape(kicker)}</div>
+            <h1>{escape(title)}</h1>
+            <p>{escape(subtitle)}</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 
-def source_summary() -> None:
-    source: TrialSource = st.session_state.source
+def section_title(title: str) -> None:
+    st.markdown(f"<div class='ts-section-title'>{escape(title)}</div>", unsafe_allow_html=True)
+
+
+def insight_card(label: str, value: str, note: str) -> None:
     st.markdown(
-        f"<span class='source-chip'>{source.source_type.upper()}</span>"
-        f"<span class='source-chip'>{source.identifier}</span>",
+        f"<div class='ts-insight'><div class='ts-insight-label'>{escape(label)}</div>"
+        f"<div class='ts-insight-value'>{escape(value)}</div>"
+        f"<div class='ts-insight-note'>{escape(note)}</div></div>",
         unsafe_allow_html=True,
     )
-    st.markdown(f"**{source.title}**")
-    st.caption(f"来源：{source.source_reference}")
+
+
+def style_figure(fig: Any, *, height: int = 360) -> Any:
+    fig.update_layout(
+        template="plotly_white",
+        height=height,
+        margin=dict(l=28, r=24, t=28, b=28),
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+        font=dict(family="Inter, Microsoft YaHei, sans-serif", size=12, color="#415361"),
+        title=dict(text=""),
+        legend_title_text="",
+        hoverlabel=dict(bgcolor="#162736", font_color="#FFFFFF"),
+    )
+    fig.update_xaxes(title=None, gridcolor="#E8ECEF", zeroline=False)
+    fig.update_yaxes(title=None, gridcolor="#E8ECEF", zeroline=False)
+    return fig
+
+
+def source_summary() -> None:
+    source: TrialSource = st.session_state.source
+    identifier = escape(source.identifier)
+    title = escape(source.title)
+    reference = escape(source.source_reference)
+    st.markdown(
+        f"""
+        <div class="ts-study-card">
+            <div>
+                <div class="ts-study-id">{identifier}</div>
+                <div class="ts-study-title">{title}</div>
+                <div class="ts-study-meta">来源：{reference}</div>
+            </div>
+            <div class="ts-study-tags">
+                <span class="ts-tag">Ⅲ期</span>
+                <span class="ts-tag">COPD</span>
+                <span class="ts-status ok">公开方案</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def workflow_strip(active_step: int) -> None:
+    names = ["方案导入", "标准审核", "模拟预筛", "招募评估"]
+    parts = []
+    for number, name in enumerate(names, start=1):
+        state = "done" if number < active_step else "active" if number == active_step else ""
+        parts.append(
+            f"<div class='ts-step {state}'><div class='ts-step-number'>0{number}</div>"
+            f"<div class='ts-step-name'>{name}</div></div>"
+        )
+    st.markdown(f"<div class='ts-steps'>{''.join(parts)}</div>", unsafe_allow_html=True)
+
+
+def go_to(page: str) -> None:
+    st.session_state.navigation = page
 
 
 def page_home() -> None:
-    hero(
-        "让入排标准变得可执行",
-        "将临床试验方案中的自然语言标准转为可审核规则，在合成患者队列中模拟筛选，定位招募瓶颈与人群代表性风险。",
-        "AI + CLINICAL OPERATIONS + PREVENTIVE MEDICINE",
+    page_header(
+        "GOLDEN-4 招募可行性评估",
+        "基于公开试验方案与合成候选者，审核入排标准并定位可能影响招募的关键条件。",
+        "项目概览",
     )
+    source_summary()
+    ensure_results()
+    results = st.session_state.results or []
+    counts = Counter(item.overall_status for item in results)
+    eligible_rate = counts.get("eligible", 0) / len(results) * 100 if results else 0
     cols = st.columns(4)
     metrics = [
-        ("真实公开方案", "NCT02347774", "ClinicalTrials.gov"),
-        ("金标准规则", str(len(st.session_state.criteria)), "逐条保留原文证据"),
-        ("合成候选患者", str(len(st.session_state.patients)), "固定种子，可复现"),
-        ("真实患者数据", "0", "无隐私与授权风险"),
+        ("入排标准", str(len(st.session_state.criteria)), "均保留方案原文"),
+        ("合成候选者", str(len(st.session_state.patients)), "固定随机种子，可复现"),
+        ("模拟符合率", f"{eligible_rate:.1f}%", "不包含待人工复核者"),
+        ("待人工复核", str(counts.get("needs_review", 0)), "涉及主观或不可执行标准"),
     ]
     for column, (label, value, help_text) in zip(cols, metrics):
         column.metric(label, value, help=help_text)
 
-    st.subheader("一个可审计的完整闭环")
-    cards = st.columns(5)
-    steps = [
-        ("01", "导入方案", "NCT 编号、粘贴文本或可搜索 PDF。"),
-        ("02", "结构化", "DeepSeek 提取字段、阈值、单位和时间窗。"),
-        ("03", "医学审核", "保留原文、置信度和主观标准提示。"),
-        ("04", "模拟预筛", "确定性规则引擎输出逐患者证据。"),
-        ("05", "招募洞察", "漏斗、排除原因、代表性和情景比较。"),
-    ]
-    for column, (number, title, text) in zip(cards, steps):
-        column.markdown(
-            f"<div class='soft-card'><span class='source-chip'>{number}</span>"
-            f"<h4>{title}</h4><p>{text}</p></div>",
+    section_title("当前工作进度")
+    workflow_strip(2)
+    left, right = st.columns([1.45, 1], gap="large")
+    with left:
+        st.markdown(
+            "<div class='ts-next-step'><strong>下一步：审核结构化标准</strong><br>"
+            "重点核对肺功能、吸烟史和时间窗条件，确认后再运行模拟预筛。</div>",
+            unsafe_allow_html=True,
+        )
+        st.button(
+            "继续标准审核",
+            type="primary",
+            on_click=go_to,
+            args=("标准解析",),
+        )
+    with right:
+        st.markdown(
+            "<div class='ts-insight'><div class='ts-insight-label'>数据使用范围</div>"
+            "<div class='ts-insight-value'>0 条真实患者记录</div>"
+            "<div class='ts-insight-note'>当前结果全部来自公开方案和 500 名合成候选者。</div></div>",
             unsafe_allow_html=True,
         )
 
     st.markdown(
-        "<div class='boundary'><b>使用边界：</b>本产品是试验设计与招募可行性原型，不诊断、不自动入组、不替代研究者、统计人员或伦理委员会。</div>",
+        "<div class='ts-boundary'><b>使用边界：</b>本工具用于试验设计与招募可行性讨论，不诊断、不自动入组，也不替代研究者、统计人员或伦理委员会。</div>",
         unsafe_allow_html=True,
     )
-    source_summary()
 
 
 def page_import() -> None:
-    hero("导入试验方案", "先提取并确认入排标准原文，再进入 AI 结构化；上传内容仅在当前会话内处理。", "STEP 1 / SOURCE")
+    page_header(
+        "导入试验方案",
+        "选择公开试验、粘贴标准原文或上传文字型 PDF；确认原文后再生成待审核规则。",
+        "01 · 方案导入",
+    )
+    workflow_strip(1)
+    section_title("选择方案来源")
     method = st.radio(
         "选择输入方式",
         ["内置演示", "NCT 编号", "粘贴文本", "上传 PDF"],
         horizontal=True,
+        label_visibility="collapsed",
     )
     if method == "内置演示":
         left, right = st.columns([2, 1])
         with left:
-            st.info("GOLDEN-4 是 COPD Ⅲ期试验，适合展示年龄、吸烟史、肺功能和时间窗规则。")
-            if st.button("重新载入 GOLDEN-4", type="primary", use_container_width=True):
+            st.info("GOLDEN-4 为 COPD Ⅲ期试验，包含年龄、吸烟史、肺功能和时间窗等典型筛选条件。")
+            if st.button("使用 GOLDEN-4 演示方案", type="primary", use_container_width=True):
                 set_source(load_demo_source())
                 st.success("演示案例已载入。")
         with right:
@@ -299,7 +443,7 @@ def page_import() -> None:
             )
     elif method == "NCT 编号":
         nct_id = st.text_input("ClinicalTrials.gov NCT 编号", value="NCT02347774")
-        if st.button("获取公开试验", type="primary"):
+        if st.button("导入公开试验", type="primary"):
             with st.spinner("正在读取 ClinicalTrials.gov..."):
                 try:
                     set_source(fetch_nct_study(nct_id))
@@ -308,7 +452,7 @@ def page_import() -> None:
                     st.error(str(exc))
     elif method == "粘贴文本":
         pasted = st.text_area("粘贴入排标准", height=260, placeholder="Inclusion Criteria: ...")
-        if st.button("使用这段文本", type="primary"):
+        if st.button("导入这段文本", type="primary"):
             try:
                 set_source(source_from_text(pasted))
                 st.success("文本已载入。")
@@ -336,46 +480,71 @@ def page_import() -> None:
             except (SourceError, PDFScannedError) as exc:
                 st.error(str(exc))
 
-    st.divider()
+    section_title("核对方案原文")
     source_summary()
-    edited_text = st.text_area(
-        "确认用于 AI 解析的文本",
-        key="criteria_editor",
-        height=430,
-        help="可以删除目录、页眉等无关内容；只有确认后的文本会发送给 DeepSeek。",
-    )
-    if st.button("确认文本", use_container_width=True):
-        if len(edited_text.strip()) < 30:
-            st.error("文本过短，无法解析。")
-        else:
-            st.session_state.criteria_text = edited_text.strip()
-            st.success("文本已确认，请进入“标准解析”。")
+    left, right = st.columns([2.15, 1], gap="large")
+    with left:
+        edited_text = st.text_area(
+            "用于生成规则的入排标准原文",
+            value=st.session_state.criteria_text,
+            key="criteria_editor",
+            height=360,
+            help="可以删除目录、页眉等无关内容；仅确认后的文本会用于自动解析。",
+        )
+        if st.button("确认原文并进入标准审核", type="primary", use_container_width=True):
+            if len(edited_text.strip()) < 30:
+                st.error("文本过短，无法解析。")
+            else:
+                st.session_state.criteria_text = edited_text.strip()
+                go_to("标准解析")
+                st.rerun()
+    with right:
+        st.markdown(
+            "<div class='ts-insight'><div class='ts-insight-label'>提交前检查</div>"
+            "<div class='ts-insight-value'>原文可人工修订</div>"
+            "<div class='ts-insight-note'>建议保留完整的入组与排除章节；删除目录、页眉和无关附录。</div></div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "<div class='ts-boundary'><b>文件处理：</b>上传内容仅在当前会话内存中处理，不写入仓库或数据库。扫描型 PDF 不进行 OCR。</div>",
+            unsafe_allow_html=True,
+        )
 
 
 def page_parse() -> None:
-    hero("结构化与医学审核", "DeepSeek 负责语义提取，Pydantic 校验结构；最终规则由人工确认后才能进入筛选。", "STEP 2 / CRITERIA")
+    page_header(
+        "标准审核",
+        "逐条核对方案原文、结构化条件与执行方式；只有人工确认后的规则才进入模拟预筛。",
+        "02 · 标准审核",
+    )
+    workflow_strip(2)
     source_summary()
     api_key = str(read_setting("DEEPSEEK_API_KEY", "") or "")
     model = str(read_setting("DEEPSEEK_MODEL", DEEPSEEK_DEFAULT_MODEL))
     live_enabled = bool_setting("ENABLE_LIVE_LLM", True)
     remaining = max(0, MAX_LIVE_CALLS_PER_SESSION - st.session_state.live_calls)
     required_chunks = len(split_for_llm(st.session_state.criteria_text))
-    c1, c2, c3 = st.columns(3)
-    c1.metric("当前结构化标准", len(st.session_state.criteria))
-    c2.metric("本会话实时额度", remaining)
+    inclusion_count = sum(item.kind == "inclusion" for item in st.session_state.criteria)
+    exclusion_count = sum(item.kind == "exclusion" for item in st.session_state.criteria)
+    review_count = sum(item.execution_status == "human_review" for item in st.session_state.criteria)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("入组标准", inclusion_count)
+    c2.metric("排除标准", exclusion_count)
+    c3.metric("需要人工判断", review_count)
     traceable = sum(bool(item.source_text and item.source_reference) for item in st.session_state.criteria)
     coverage = traceable / len(st.session_state.criteria) * 100 if st.session_state.criteria else 0
-    c3.metric("原文追溯率", f"{coverage:.0f}%")
+    c4.metric("原文追溯率", f"{coverage:.0f}%")
 
+    section_title("生成与恢复")
     left, right = st.columns(2)
     with left:
         if st.button(
-            "调用 DeepSeek 重新解析",
+            "重新生成待审标准",
             type="primary",
             use_container_width=True,
             disabled=not api_key or not live_enabled or required_chunks > remaining,
         ):
-            with st.spinner("DeepSeek 正在提取字段、阈值与时间窗..."):
+            with st.spinner("正在提取字段、阈值和时间窗..."):
                 try:
                     outcome = parse_with_deepseek(
                         st.session_state.criteria_text,
@@ -395,48 +564,72 @@ def page_parse() -> None:
                 except LLMParseError as exc:
                     st.error(str(exc))
     with right:
-        if st.button("载入审核后的 GOLDEN-4 缓存", use_container_width=True):
+        if st.button("恢复已审核的演示标准", use_container_width=True):
             st.session_state.criteria = load_cached_demo_criteria()
             st.session_state.results = None
             st.session_state.last_parse_note = "已载入 27 条审核标准。"
             st.success(st.session_state.last_parse_note)
 
     if not api_key:
-        st.info("当前未配置新 DEEPSEEK_API_KEY；缓存演示和全部规则分析仍可使用。")
+        st.info("当前未配置自动解析服务；仍可使用已审核的演示标准和全部规则分析功能。")
     elif not live_enabled:
-        st.warning("实时解析已由 ENABLE_LIVE_LLM 关闭。")
+        st.warning("自动解析服务当前已关闭。")
     elif required_chunks > remaining:
         st.warning(f"当前文本需要 {required_chunks} 次调用，已超过本会话剩余额度 {remaining} 次。")
-    st.caption(st.session_state.last_parse_note)
+    with st.expander("查看解析记录", expanded=False):
+        st.caption(st.session_state.last_parse_note)
+        st.caption(f"解析模型：{model} · 本会话剩余额度：{remaining} 次")
 
     if not st.session_state.criteria:
         st.warning("还没有结构化标准。请配置 API 后解析，或载入 GOLDEN-4 缓存。")
         return
 
-    frame = criteria_to_frame(st.session_state.criteria)
+    section_title("逐条审核")
+    st.caption("原文与结构化结果并排展示。主观标准标记为“人工确认”，不会由规则引擎自动决定。")
+    frame = criteria_to_review_frame(st.session_state.criteria)
     editable = st.data_editor(
         frame,
         width="stretch",
-        height=560,
+        height=590,
         hide_index=True,
         num_rows="fixed",
-        disabled=["criterion_id", "source_reference"],
+        disabled=["criterion_id"],
+        column_order=[
+            "criterion_id",
+            "kind",
+            "source_text",
+            "field",
+            "operator",
+            "value",
+            "unit",
+            "time_window_days",
+            "execution_status",
+            "confidence",
+        ],
         column_config={
-            "kind": st.column_config.SelectboxColumn("类型", options=["inclusion", "exclusion"]),
+            "criterion_id": st.column_config.TextColumn("编号", width="small"),
+            "kind": st.column_config.SelectboxColumn("类型", options=list(KIND_LABELS.values()), width="small"),
             "operator": st.column_config.SelectboxColumn(
-                "运算符",
-                options=["eq", "neq", "lt", "lte", "gt", "gte", "between", "in", "not_in", "is_true", "is_false", "within_days", "exists", "human_review"],
+                "判断条件",
+                options=list(OPERATOR_LABELS.values()),
+                width="medium",
             ),
-            "execution_status": st.column_config.SelectboxColumn("执行方式", options=["automated", "human_review"]),
-            "confidence": st.column_config.ProgressColumn("置信度", min_value=0.0, max_value=1.0, format="%.2f"),
+            "execution_status": st.column_config.SelectboxColumn(
+                "执行方式", options=list(EXECUTION_LABELS.values()), width="medium"
+            ),
+            "confidence": st.column_config.ProgressColumn(
+                "结构化置信度", min_value=0.0, max_value=1.0, format="%.2f", width="medium"
+            ),
             "source_text": st.column_config.TextColumn("标准原文", width="large"),
-            "value": st.column_config.TextColumn("JSON 阈值"),
-            "applicability": st.column_config.TextColumn("适用条件 JSON"),
+            "field": st.column_config.TextColumn("结构化字段", width="large"),
+            "value": st.column_config.TextColumn("阈值", width="medium"),
+            "unit": st.column_config.TextColumn("单位", width="small"),
+            "time_window_days": st.column_config.NumberColumn("时间窗（天）", width="small"),
         },
     )
-    if st.button("保存人工审核结果", type="primary"):
+    if st.button("确认并保存审核结果", type="primary"):
         try:
-            st.session_state.criteria = criteria_from_frame(editable)
+            st.session_state.criteria = criteria_from_review_frame(editable)
             st.session_state.results = None
             st.success("审核结果已保存到当前会话。")
         except ValueError as exc:
@@ -444,14 +637,14 @@ def page_parse() -> None:
 
     d1, d2 = st.columns(2)
     d1.download_button(
-        "下载标准 JSON",
+        "导出标准 JSON",
         data=criteria_json_bytes(st.session_state.criteria),
         file_name="trialscope_criteria.json",
         mime="application/json",
         use_container_width=True,
     )
     d2.download_button(
-        "下载标准 CSV",
+        "导出标准 CSV",
         data=criteria_to_frame(st.session_state.criteria).to_csv(index=False).encode("utf-8-sig"),
         file_name="trialscope_criteria.csv",
         mime="text/csv",
@@ -460,11 +653,16 @@ def page_parse() -> None:
 
 
 def page_screening() -> None:
-    hero("合成患者预筛", "规则引擎逐条执行审核后的标准，并保留患者值、阈值、标准原文和判定原因。", "STEP 3 / MATCHING")
+    page_header(
+        "模拟预筛",
+        "在 500 名合成候选者中执行已审核规则，并为每项判断保留患者值、条件和方案原文。",
+        "03 · 模拟预筛",
+    )
+    workflow_strip(3)
     if not st.session_state.criteria:
         st.warning("请先完成标准解析。")
         return
-    if st.button("运行 500 人模拟预筛", type="primary"):
+    if st.button("重新运行模拟预筛", type="primary"):
         with st.spinner("正在执行确定性规则..."):
             st.session_state.results = match_dataframe(
                 st.session_state.patients, st.session_state.criteria
@@ -478,48 +676,97 @@ def page_screening() -> None:
     for column, status in zip(columns, ["eligible", "ineligible", "missing_data", "needs_review"]):
         column.metric(STATUS_LABELS[status], counts.get(status, 0))
 
-    frame = results_dataframe(results)
+    section_title("候选者结果")
+    raw_frame = results_dataframe(results)
+    display_frame = results_to_display_frame(results)
     status_filter = st.multiselect(
-        "筛选结果",
+        "状态筛选",
         options=list(STATUS_LABELS),
         default=list(STATUS_LABELS),
         format_func=lambda item: STATUS_LABELS[item],
     )
-    st.dataframe(frame[frame["overall_status"].isin(status_filter)], width="stretch", hide_index=True)
+    selected_labels = {STATUS_LABELS[item] for item in status_filter}
+    st.dataframe(
+        display_frame[display_frame["overall_status"].isin(selected_labels)],
+        width="stretch",
+        height=390,
+        hide_index=True,
+        column_config={
+            "patient_id": st.column_config.TextColumn("候选者编号", width="small"),
+            "overall_status": st.column_config.TextColumn("预筛状态", width="small"),
+            "summary": st.column_config.TextColumn("判断摘要", width="large"),
+            "failed_count": st.column_config.NumberColumn("未满足", width="small"),
+            "missing_count": st.column_config.NumberColumn("缺失", width="small"),
+            "review_count": st.column_config.NumberColumn("待确认", width="small"),
+        },
+    )
     st.download_button(
-        "下载患者筛选结果 CSV",
-        data=frame.to_csv(index=False).encode("utf-8-sig"),
+        "导出完整预筛结果 CSV",
+        data=raw_frame.to_csv(index=False).encode("utf-8-sig"),
         file_name="trialscope_patient_results.csv",
         mime="text/csv",
     )
 
-    st.subheader("逐患者证据链")
-    patient_id = st.selectbox("选择患者", frame["patient_id"].tolist())
+    section_title("患者证据")
+    patient_id = st.selectbox("选择候选者", raw_frame["patient_id"].tolist())
     result = next(item for item in results if item.patient_id == patient_id)
+    st.markdown(
+        f"<div class='ts-next-step'><strong>{escape(STATUS_LABELS[result.overall_status])}</strong><br>"
+        f"{escape(result_summary(result))}</div>",
+        unsafe_allow_html=True,
+    )
     patient_row = st.session_state.patients[
         st.session_state.patients["patient_id"].astype(str) == patient_id
     ]
-    with st.expander("查看合成患者字段", expanded=False):
-        st.dataframe(patient_row.T.rename(columns={patient_row.index[0]: "value"}), width="stretch")
+    with st.expander("查看合成候选者原始字段", expanded=False):
+        patient_view = patient_row.T.rename(columns={patient_row.index[0]: "值"}).reset_index()
+        patient_view.columns = ["字段", "值"]
+        patient_view["字段"] = patient_view["字段"].map(FIELD_LABELS).fillna(patient_view["字段"])
+        patient_view["值"] = patient_view["值"].map(display_value)
+        st.dataframe(patient_view, width="stretch", hide_index=True)
+    evidence_status = {
+        "pass": "通过",
+        "fail": "未通过",
+        "missing": "信息缺失",
+        "review": "人工确认",
+        "not_applicable": "不适用",
+    }
     evidence_frame = pd.DataFrame(
         [
             {
-                "criterion_id": item.criterion_id,
-                "status": item.status,
-                "field": item.field,
-                "patient_value": item.patient_value,
-                "expected": item.expected,
-                "message": item.message,
-                "source_text": item.source_text,
+                "编号": item.criterion_id,
+                "结果": evidence_status[item.status],
+                "字段": FIELD_LABELS.get(item.field, item.field or "—"),
+                "患者值": display_value(item.patient_value),
+                "标准值": display_value(item.expected),
+                "判定说明": item.message,
+                "方案原文": item.source_text,
             }
             for item in result.evidences
         ]
     )
-    st.dataframe(evidence_frame, width="stretch", hide_index=True)
+    st.dataframe(
+        evidence_frame,
+        width="stretch",
+        height=430,
+        hide_index=True,
+        column_config={
+            "编号": st.column_config.TextColumn(width="small"),
+            "结果": st.column_config.TextColumn(width="small"),
+            "字段": st.column_config.TextColumn(width="medium"),
+            "判定说明": st.column_config.TextColumn(width="large"),
+            "方案原文": st.column_config.TextColumn(width="large"),
+        },
+    )
 
 
 def page_analysis() -> None:
-    hero("招募可行性与情景模拟", "观察候选人群如何被逐层筛减，并比较参数调整前后的数量与代表性变化。", "STEP 4 / INSIGHT")
+    page_header(
+        "招募可行性评估",
+        "识别候选人群的主要筛减环节、数据缺口和代表性变化，并比较不同参数情景。",
+        "04 · 招募评估",
+    )
+    workflow_strip(4)
     ensure_results()
     if not st.session_state.results:
         st.warning("请先运行患者预筛。")
@@ -527,122 +774,184 @@ def page_analysis() -> None:
     patients = st.session_state.patients
     criteria = st.session_state.criteria
     results = st.session_state.results
-
-    left, right = st.columns(2)
-    with left:
-        funnel = build_funnel(patients, criteria)
-        fig = px.funnel(funnel, x="count", y="stage", title="招募预筛漏斗")
-        fig.update_traces(marker_color="#087F8C")
-        st.plotly_chart(fig, width="stretch")
-    with right:
-        statuses = status_counts(results)
-        fig = px.pie(
-            statuses,
-            values="count",
-            names="label",
-            hole=0.58,
-            title="预筛结果构成",
-            color="status",
-            color_discrete_map={
-                "eligible": "#2A9D8F",
-                "ineligible": "#E76F51",
-                "missing_data": "#E9C46A",
-                "needs_review": "#4A7C9B",
-            },
+    counts = Counter(item.overall_status for item in results)
+    blockers = blocker_counts(results, criteria)
+    missing = missing_field_counts(results)
+    potential = counts.get("eligible", 0) + counts.get("needs_review", 0)
+    eligible_rate = counts.get("eligible", 0) / len(results) * 100 if results else 0
+    criterion_map = {item.criterion_id: item for item in criteria}
+    if not blockers.empty:
+        top_blocker_id = str(blockers.iloc[0]["criterion_id"])
+        top_blocker_count = int(blockers.iloc[0]["count"])
+        top_criterion = criterion_map.get(top_blocker_id)
+        top_blocker_name = FIELD_LABELS.get(
+            top_criterion.field if top_criterion else None,
+            top_blocker_id,
         )
-        st.plotly_chart(fig, width="stretch")
+    else:
+        top_blocker_name, top_blocker_count = "暂无", 0
 
-    left, right = st.columns(2)
-    with left:
-        blockers = blocker_counts(results, criteria).head(10)
-        if not blockers.empty:
-            fig = px.bar(
-                blockers.sort_values("count"),
-                x="count",
-                y="criterion_id",
-                orientation="h",
-                hover_data=["criterion"],
-                title="主要排除标准",
-            )
-            fig.update_traces(marker_color="#E76F51")
-            st.plotly_chart(fig, width="stretch")
-    with right:
-        missing = missing_field_counts(results).head(10)
-        if not missing.empty:
-            fig = px.bar(
-                missing.sort_values("count"),
-                x="count",
-                y="field",
-                orientation="h",
-                title="主要缺失字段",
-            )
-            fig.update_traces(marker_color="#E9A23B")
-            st.plotly_chart(fig, width="stretch")
+    summary_columns = st.columns(4)
+    with summary_columns[0]:
+        insight_card("模拟符合率", f"{eligible_rate:.1f}%", "不包含待人工复核者")
+    with summary_columns[1]:
+        insight_card("潜在候选者", f"{potential} 人", "模拟符合与待复核合计")
+    with summary_columns[2]:
+        insight_card("首要筛选瓶颈", top_blocker_name, f"影响 {top_blocker_count} 名候选者")
+    with summary_columns[3]:
+        insight_card(
+            "待补充或复核",
+            f"{counts.get('missing_data', 0) + counts.get('needs_review', 0)} 人",
+            "优先补充信息并完成医学判断",
+        )
 
-    representation = representation_table(patients, results)
-    fig = px.bar(
-        representation,
-        x="metric",
-        y="value",
-        color="group",
-        barmode="group",
-        title="候选队列与模拟可入组人群的代表性对比",
-        color_discrete_sequence=["#6C9EC1", "#087F8C"],
+    section_title("评估结果")
+    funnel_tab, representation_tab, completeness_tab = st.tabs(
+        ["招募瓶颈", "人群代表性", "数据完整性"]
     )
-    st.plotly_chart(fig, width="stretch")
-    st.caption("比例指标单位为%，平均年龄单位为岁。合成数据仅用于功能验证，不代表真实疾病人群分布。")
+    with funnel_tab:
+        left, right = st.columns([1.15, 1], gap="large")
+        with left:
+            st.markdown("**候选者筛减路径**")
+            funnel = build_funnel(patients, criteria)
+            fig = px.funnel(funnel, x="count", y="stage")
+            fig.update_traces(marker_color="#2D7773", textfont_color="#FFFFFF")
+            st.plotly_chart(
+                style_figure(fig, height=390),
+                width="stretch",
+                config={"displayModeBar": False},
+            )
+        with right:
+            st.markdown("**主要未通过标准**")
+            top_blockers = blockers.head(7).copy()
+            if not top_blockers.empty:
+                labels = []
+                for criterion_id in top_blockers["criterion_id"]:
+                    criterion = criterion_map.get(criterion_id)
+                    field_label = FIELD_LABELS.get(
+                        criterion.field if criterion else None,
+                        criterion_id,
+                    )
+                    labels.append(f"{criterion_id} · {field_label}")
+                top_blockers["label"] = labels
+                fig = px.bar(
+                    top_blockers.sort_values("count"),
+                    x="count",
+                    y="label",
+                    orientation="h",
+                    hover_data={"criterion": True, "label": False},
+                )
+                fig.update_traces(marker_color="#B84A45")
+                st.plotly_chart(
+                    style_figure(fig, height=390),
+                    width="stretch",
+                    config={"displayModeBar": False},
+                )
+    with representation_tab:
+        st.markdown("**候选队列与潜在入组人群对比**")
+        representation = representation_table(patients, results)
+        fig = px.bar(
+            representation,
+            x="metric",
+            y="value",
+            color="group",
+            barmode="group",
+            color_discrete_sequence=["#9BAAB4", "#2D7773"],
+            labels={"metric": "指标", "value": "数值", "group": "人群"},
+        )
+        st.plotly_chart(
+            style_figure(fig, height=390),
+            width="stretch",
+            config={"displayModeBar": False},
+        )
+        st.caption("比例指标单位为%，平均年龄单位为岁。合成数据不代表真实疾病人群分布。")
+    with completeness_tab:
+        st.markdown("**影响自动判断的主要缺失字段**")
+        top_missing = missing.head(8).copy()
+        if top_missing.empty:
+            st.success("当前候选队列没有影响判断的字段缺失。")
+        else:
+            top_missing["label"] = top_missing["field"].map(
+                lambda item: FIELD_LABELS.get(item, item)
+            )
+            fig = px.bar(
+                top_missing.sort_values("count"),
+                x="count",
+                y="label",
+                orientation="h",
+            )
+            fig.update_traces(marker_color="#A66B16")
+            st.plotly_chart(
+                style_figure(fig, height=360),
+                width="stretch",
+                config={"displayModeBar": False},
+            )
 
-    st.subheader("What-if 情景模拟")
+    section_title("情景比较")
     st.markdown(
-        "<div class='boundary'><b>安全提示：</b>参数调整只展示合成队列变化，不构成临床试验方案修改建议。</div>",
+        "<div class='ts-boundary'><b>安全提示：</b>参数调整只展示合成队列变化，不构成临床试验方案修改建议。</div>",
         unsafe_allow_html=True,
     )
-    row1 = st.columns(4)
-    age_min = row1[0].number_input("最低年龄", 18, 90, 40)
-    pack_years = row1[1].number_input("最低吸烟包年", 0.0, 100.0, 10.0, 1.0)
-    fev1_pct = row1[2].number_input("FEV1 %预测值上限", 20.0, 120.0, 80.0, 1.0)
-    fev1_liters = row1[3].number_input("FEV1 容量下限 (L)", 0.1, 5.0, 0.7, 0.1)
-    row2 = st.columns(4)
-    ratio = row2[0].number_input("FEV1/FVC 上限", 0.3, 1.0, 0.7, 0.01)
-    oxygen = row2[1].number_input("氧疗小时上限", 0.0, 24.0, 12.0, 1.0)
-    exacerbation_days = row2[2].number_input("急性加重窗口（天）", 1, 365, 42)
-    infection_days = row2[3].number_input("感染窗口（天）", 1, 365, 42)
+    with st.expander("调整模拟参数", expanded=False):
+        row1 = st.columns(4)
+        age_min = row1[0].number_input("最低年龄", 18, 90, 40)
+        pack_years = row1[1].number_input("最低吸烟包年", 0.0, 100.0, 10.0, 1.0)
+        fev1_pct = row1[2].number_input("FEV1 %预计值上限", 20.0, 120.0, 80.0, 1.0)
+        fev1_liters = row1[3].number_input("FEV1 容量下限（L）", 0.1, 5.0, 0.7, 0.1)
+        row2 = st.columns(4)
+        ratio = row2[0].number_input("FEV1/FVC 上限", 0.3, 1.0, 0.7, 0.01)
+        oxygen = row2[1].number_input("每日氧疗上限（小时）", 0.0, 24.0, 12.0, 1.0)
+        exacerbation_days = row2[2].number_input("急性加重窗口（天）", 1, 365, 42)
+        infection_days = row2[3].number_input("感染窗口（天）", 1, 365, 42)
 
-    if st.button("运行情景比较", type="primary"):
-        scenario_criteria = apply_scenario(
-            criteria,
-            {
-                "I01": age_min,
-                "I03": pack_years,
-                "I04": fev1_pct,
-                "I05": fev1_liters,
-                "I06": ratio,
-                "E04": oxygen,
-                "E03": exacerbation_days,
-                "E05": infection_days,
-            },
-        )
-        comparison, _, scenario_results = scenario_comparison(patients, criteria, scenario_criteria)
-        st.session_state.scenario_comparison = comparison
-        st.session_state.scenario_results = scenario_results
+        if st.button("运行情景比较", type="primary"):
+            scenario_criteria = apply_scenario(
+                criteria,
+                {
+                    "I01": age_min,
+                    "I03": pack_years,
+                    "I04": fev1_pct,
+                    "I05": fev1_liters,
+                    "I06": ratio,
+                    "E04": oxygen,
+                    "E03": exacerbation_days,
+                    "E05": infection_days,
+                },
+            )
+            comparison, _, scenario_results = scenario_comparison(
+                patients, criteria, scenario_criteria
+            )
+            st.session_state.scenario_comparison = comparison
+            st.session_state.scenario_results = scenario_results
 
     if st.session_state.scenario_comparison is not None:
         comparison = st.session_state.scenario_comparison
-        st.dataframe(comparison, width="stretch", hide_index=True)
+        eligible_row = comparison[comparison["status"] == "eligible"].iloc[0]
+        scenario_metrics = st.columns(3)
+        scenario_metrics[0].metric("基线模拟符合", int(eligible_row["baseline"]))
+        scenario_metrics[1].metric("情景模拟符合", int(eligible_row["scenario"]))
+        scenario_metrics[2].metric("人数变化", int(eligible_row["change"]), delta=int(eligible_row["change"]))
+        display_comparison = comparison[["label", "baseline", "scenario", "change"]].rename(
+            columns={"label": "结果", "baseline": "基线", "scenario": "情景", "change": "变化"}
+        )
+        st.dataframe(display_comparison, width="stretch", hide_index=True)
         fig = px.bar(
             comparison,
             x="label",
             y=["baseline", "scenario"],
             barmode="group",
-            title="基线与情景结果对比",
-            labels={"value": "人数", "variable": "方案"},
-            color_discrete_sequence=["#6C9EC1", "#087F8C"],
+            labels={"label": "结果", "value": "人数", "variable": "方案"},
+            color_discrete_sequence=["#9BAAB4", "#2D7773"],
         )
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(
+            style_figure(fig, height=350),
+            width="stretch",
+            config={"displayModeBar": False},
+        )
 
     report = build_markdown_report(st.session_state.source.title, patients, results, criteria)
     st.download_button(
-        "下载分析摘要 Markdown",
+        "导出评估摘要 Markdown",
         data=report.encode("utf-8"),
         file_name="trialscope_recruitment_report.md",
         mime="text/markdown",
@@ -651,21 +960,36 @@ def page_analysis() -> None:
 
 def sidebar() -> str:
     with st.sidebar:
-        st.markdown("## 🫁 TrialScopeAI")
-        st.caption("临床试验招募可行性评估助手")
+        st.markdown(
+            "<div class='ts-brand'><div class='ts-brand-mark'>TS</div><div>"
+            "<div class='ts-brand-name'>TrialScope</div>"
+            "<div class='ts-brand-subtitle'>临床试验招募可行性评估</div></div></div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("<div class='ts-nav-label'>工作流程</div>", unsafe_allow_html=True)
+        nav_labels = {
+            "项目说明": "项目概览",
+            "试验 / PDF 导入": "01　方案导入",
+            "标准解析": "02　标准审核",
+            "患者预筛": "03　模拟预筛",
+            "招募分析": "04　招募评估",
+        }
         page = st.radio(
             "工作流",
-            ["项目说明", "试验 / PDF 导入", "标准解析", "患者预筛", "招募分析"],
+            list(nav_labels),
+            key="navigation",
+            format_func=lambda item: nav_labels[item],
             label_visibility="collapsed",
         )
-        st.divider()
         source: TrialSource = st.session_state.source
-        st.caption("当前案例")
-        st.write(f"**{source.identifier}**")
-        st.caption(source.title)
-        st.divider()
         st.markdown(
-            "<p class='footer-note'>仅使用公开试验与合成患者数据。所有输出均为原型模拟结果。</p>",
+            f"<div class='ts-sidebar-study'><div class='ts-nav-label'>当前研究</div>"
+            f"<div class='ts-sidebar-id'>{escape(source.identifier)}</div>"
+            f"<div class='ts-sidebar-title'>{escape(source.title)}</div></div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "<div class='ts-boundary'>仅使用公开试验与合成候选者。所有结果均为原型模拟。</div>",
             unsafe_allow_html=True,
         )
     return page

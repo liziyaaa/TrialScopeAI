@@ -19,7 +19,7 @@ Thumbs.db
 
 # Temporary uploads and renders
 uploads/
-tmp/pdfs/*
+tmp/
 
 # Streamlit runtime
 .streamlit/cache/
