@@ -1,0 +1,7 @@
+{
+  "seed": 20260716,
+  "synthetic_patient_count": 500,
+  "edge_case_count": 50,
+  "source": "https://clinicaltrials.gov/study/NCT02347774",
+  "disclaimer": "All patient records are synthetic and for prototype validation only."
+}

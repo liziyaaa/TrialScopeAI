@@ -1,0 +1,14 @@
+{
+  "source_type": "demo",
+  "identifier": "NCT02347774",
+  "title": "GOLDEN-4: Efficacy and Safety of Nebulized SUN-101 in Patients With COPD",
+  "source_reference": "https://clinicaltrials.gov/study/NCT02347774",
+  "metadata": {
+    "sponsor": "Sunovion Respiratory Development Inc.",
+    "phase": "Phase 3",
+    "enrollment": 641,
+    "status": "Completed",
+    "data_note": "Public registry eligibility text retrieved from ClinicalTrials.gov."
+  },
+  "criteria_text": "Inclusion Criteria:\n\n1. Male or female patients age >= 40 years, inclusive.\n2. A clinical diagnosis of COPD according to the GOLD 2014 guidelines.\n3. Current smokers or ex-smokers with at least 10 pack-year smoking history.\n4. Post-bronchodilator FEV1 < 80% of predicted normal and > 0.7 L during Screening.\n5. Post-bronchodilator FEV1/FVC ratio < 0.70 during Screening.\n6. Ability to perform reproducible spirometry according to ATS and ERS guidelines.\n7. Female patients of childbearing potential must have a negative pregnancy test and use an acceptable method of birth control.\n8. Willing and able to provide written informed consent.\n9. Willing and able to attend all study visits and adhere to all study assessments and procedures.\n\nExclusion Criteria:\n\n1. Severe comorbidities, unstable cardiac or pulmonary disease, or another condition that would preclude safe completion in the investigator's opinion.\n2. Clinically significant respiratory disease other than COPD.\n3. COPD exacerbation requiring hospitalization or increased treatment within 6 weeks before screening.\n4. Daily oxygen therapy > 12 hours per day.\n5. Respiratory tract infection within 6 weeks before screening.\n6. Oral, intravenous, or intramuscular steroids within 3 months before screening.\n7. Malignancy within the past 5 years, except localized basal cell carcinoma.\n8. QTcF > 450 msec for males or > 470 msec for females, or history of long QT syndrome.\n9. Clinically significant bladder outflow obstruction or catheterization within the previous 6 months.\n10. History of narrow angle glaucoma.\n11. Hypersensitivity or intolerance to aerosol medications.\n12. Substance abuse within the previous 3 months.\n13. Significant psychiatric disease that would likely prevent study completion in the investigator's opinion.\n14. Investigational drug received within 30 days before screening or current participation in another investigational trial.\n15. Previously received SUN-101.\n16. Contraindication or hypersensitivity to anticholinergic agents, beta2 agonists, or sympathomimetic amines."
+}
