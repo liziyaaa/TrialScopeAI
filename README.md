@@ -6,6 +6,9 @@ TrialScopeAI 将临床试验方案中的自然语言入排标准转换为可审�
 
 本项目面向药企临床开发、医学与运营团队。它不是诊断或患者入组系统，不使用真实患者数据，也不替代研究者、统计人员和伦理委员会。
 
+- 在线演示：[trialscopeai.streamlit.app](https://trialscopeai.streamlit.app/)
+- 大赛材料：[TrialScopeAI 大赛提交材料](output/pdf/TrialScopeAI_大赛提交材料.pdf)
+
 ## 演示闭环
 
 ```mermaid
@@ -83,7 +86,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-当前自动化测试覆盖规则运算符、50 个边界病例、PDF 解析异常、NCT 映射、DeepSeek 模拟响应、限额/缓存、情景分析和无 Key 的 Streamlit 启动。
+当前 40 项自动化测试覆盖规则运算符、50 个边界病例、PDF 解析异常、NCT 映射、DeepSeek 模拟响应、限额/缓存、情景分析和无 Key 的 Streamlit 启动。
 GitHub Actions 会在 `main` 更新和 Pull Request 上使用 Python 3.12 自动运行同一套测试。
 
 ## 架构

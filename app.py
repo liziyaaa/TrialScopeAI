@@ -87,6 +87,9 @@ def bool_setting(name: str, default: bool = True) -> bool:
 def init_state() -> None:
     demo_source = load_demo_source()
     defaults = {
+        "navigation": "项目说明",
+        "import_method": "内置演示",
+        "selected_patient_id": None,
         "source": demo_source,
         "criteria_text": demo_source.criteria_text,
         "criteria": load_cached_demo_criteria(),
@@ -361,6 +364,46 @@ def go_to(page: str) -> None:
     st.session_state.navigation = page
 
 
+def choose_import_method(method: str) -> None:
+    st.session_state.import_method = method
+
+
+def task_row(
+    number: str,
+    title: str,
+    hint: str,
+    status: str,
+    page: str,
+    action: str,
+    *,
+    active: bool = False,
+) -> None:
+    state = "active" if active else "ready"
+    with st.container(border=True, key=f"task_{number}_{state}"):
+        number_col, text_col, status_col, action_col = st.columns(
+            [0.45, 4.5, 1.25, 1.25], vertical_alignment="center"
+        )
+        number_col.markdown(f"<div class='ts-task-number'>{number}</div>", unsafe_allow_html=True)
+        text_col.markdown(
+            f"<div class='ts-task-title'>{escape(title)}</div>"
+            f"<div class='ts-task-hint'>{escape(hint)}</div>",
+            unsafe_allow_html=True,
+        )
+        status_class = "current" if active else "complete"
+        status_col.markdown(
+            f"<span class='ts-task-status {status_class}'>{escape(status)}</span>",
+            unsafe_allow_html=True,
+        )
+        action_col.button(
+            action,
+            key=f"task_action_{number}",
+            type="primary" if active else "secondary",
+            use_container_width=True,
+            on_click=go_to,
+            args=(page,),
+        )
+
+
 def page_home() -> None:
     page_header(
         "GOLDEN-4 招募可行性评估",
@@ -382,28 +425,20 @@ def page_home() -> None:
     for column, (label, value, help_text) in zip(cols, metrics):
         column.metric(label, value, help=help_text)
 
-    section_title("当前工作进度")
-    workflow_strip(2)
-    left, right = st.columns([1.45, 1], gap="large")
-    with left:
-        st.markdown(
-            "<div class='ts-next-step'><strong>下一步：审核结构化标准</strong><br>"
-            "重点核对肺功能、吸烟史和时间窗条件，确认后再运行模拟预筛。</div>",
-            unsafe_allow_html=True,
-        )
-        st.button(
-            "继续标准审核",
-            type="primary",
-            on_click=go_to,
-            args=("标准解析",),
-        )
-    with right:
-        st.markdown(
-            "<div class='ts-insight'><div class='ts-insight-label'>数据使用范围</div>"
-            "<div class='ts-insight-value'>0 条真实患者记录</div>"
-            "<div class='ts-insight-note'>当前结果全部来自公开方案和 500 名合成候选者。</div></div>",
-            unsafe_allow_html=True,
-        )
+    section_title("开始一次评估")
+    st.caption("按顺序完成四项任务；右侧按钮是每一步的操作入口。当前建议先审核结构化标准。")
+    task_row("01", "导入试验方案", "确认 NCT、粘贴文本或 PDF 中的入排标准原文", "已载入", "试验 / PDF 导入", "查看")
+    task_row("02", "审核结构化标准", "核对字段、阈值、时间窗及需要人工判断的条件", "当前任务", "标准解析", "继续审核", active=True)
+    task_row("03", "运行模拟预筛", "在 500 名合成候选者中执行已确认规则", "可运行", "患者预筛", "打开")
+    task_row("04", "评估招募可行性", "查看筛减瓶颈、数据缺口、代表性与情景变化", "可查看", "招募分析", "打开")
+
+    section_title("数据使用范围")
+    st.markdown(
+        "<div class='ts-insight'><div class='ts-insight-label'>当前演示数据</div>"
+        "<div class='ts-insight-value'>0 条真实患者记录</div>"
+        "<div class='ts-insight-note'>公开试验方案 + 500 名固定随机种子的合成候选者，结果可复现。</div></div>",
+        unsafe_allow_html=True,
+    )
 
     st.markdown(
         "<div class='ts-boundary'><b>使用边界：</b>本工具用于试验设计与招募可行性讨论，不诊断、不自动入组，也不替代研究者、统计人员或伦理委员会。</div>",
@@ -419,66 +454,102 @@ def page_import() -> None:
     )
     workflow_strip(1)
     section_title("选择方案来源")
-    method = st.radio(
-        "选择输入方式",
-        ["内置演示", "NCT 编号", "粘贴文本", "上传 PDF"],
-        horizontal=True,
-        label_visibility="collapsed",
-    )
-    if method == "内置演示":
-        left, right = st.columns([2, 1])
-        with left:
-            st.info("GOLDEN-4 为 COPD Ⅲ期试验，包含年龄、吸烟史、肺功能和时间窗等典型筛选条件。")
-            if st.button("使用 GOLDEN-4 演示方案", type="primary", use_container_width=True):
-                set_source(load_demo_source())
-                st.success("演示案例已载入。")
-        with right:
-            pdf_path = OUTPUT_DIR / "pdf" / "golden4_demo_protocol.pdf"
-            st.download_button(
-                "下载演示 PDF",
-                data=pdf_path.read_bytes(),
-                file_name=pdf_path.name,
-                mime="application/pdf",
-                use_container_width=True,
+    st.caption("先选择一种来源。每次只处理一种输入，原文确认后才会进入结构化审核。")
+    source_options = [
+        ("内置演示", "GOLDEN-4", "无需准备文件，适合直接体验"),
+        ("NCT 编号", "公开试验", "从 ClinicalTrials.gov 获取标准"),
+        ("粘贴文本", "标准原文", "适合已有 Word 或网页文本"),
+        ("上传 PDF", "研究方案", "支持可搜索的文字型 PDF"),
+    ]
+    source_columns = st.columns(4)
+    for index, (method_name, title, hint) in enumerate(source_options):
+        is_selected = st.session_state.import_method == method_name
+        state = "selected" if is_selected else "idle"
+        with source_columns[index]:
+            with st.container(border=True, key=f"source_card_{index}_{state}"):
+                st.markdown(
+                    f"<div class='ts-source-title'>{escape(title)}</div>"
+                    f"<div class='ts-source-hint'>{escape(hint)}</div>",
+                    unsafe_allow_html=True,
+                )
+                st.button(
+                    "已选择" if is_selected else "选择此来源",
+                    key=f"choose_source_{index}",
+                    disabled=is_selected,
+                    use_container_width=True,
+                    on_click=choose_import_method,
+                    args=(method_name,),
+                )
+
+    method = st.session_state.import_method
+    st.markdown(f"<div class='ts-selection-label'>当前选择：{escape(method)}</div>", unsafe_allow_html=True)
+    with st.container(border=True, key="source_input_panel"):
+        if method == "内置演示":
+            left, right = st.columns([2, 1])
+            with left:
+                st.markdown("**GOLDEN-4（NCT02347774）**")
+                st.caption("COPD Ⅲ期公开试验，覆盖年龄、吸烟史、肺功能、用药和时间窗，适合完整演示。")
+                if st.button("载入 GOLDEN-4 演示", type="primary", use_container_width=True):
+                    set_source(load_demo_source())
+                    st.success("演示案例已载入。请在下方核对原文。")
+            with right:
+                pdf_path = OUTPUT_DIR / "pdf" / "golden4_demo_protocol.pdf"
+                st.download_button(
+                    "下载演示 PDF",
+                    data=pdf_path.read_bytes(),
+                    file_name=pdf_path.name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+        elif method == "NCT 编号":
+            st.markdown("**输入公开试验编号**")
+            nct_id = st.text_input(
+                "ClinicalTrials.gov NCT 编号",
+                value="NCT02347774",
+                help="格式示例：NCT02347774",
             )
-    elif method == "NCT 编号":
-        nct_id = st.text_input("ClinicalTrials.gov NCT 编号", value="NCT02347774")
-        if st.button("导入公开试验", type="primary"):
-            with st.spinner("正在读取 ClinicalTrials.gov..."):
+            if st.button("获取试验标准", type="primary", use_container_width=True):
+                with st.spinner("正在读取 ClinicalTrials.gov..."):
+                    try:
+                        set_source(fetch_nct_study(nct_id))
+                        st.success("试验记录与入排标准已导入。请在下方核对原文。")
+                    except SourceError as exc:
+                        st.error(str(exc))
+        elif method == "粘贴文本":
+            st.markdown("**粘贴入组与排除标准**")
+            pasted = st.text_area(
+                "标准原文",
+                height=240,
+                placeholder="Inclusion Criteria: ...\n\nExclusion Criteria: ...",
+            )
+            if st.button("载入这段原文", type="primary", use_container_width=True):
                 try:
-                    set_source(fetch_nct_study(nct_id))
-                    st.success("试验记录与入排标准已导入。")
+                    set_source(source_from_text(pasted))
+                    st.success("文本已载入。请在下方核对原文。")
                 except SourceError as exc:
                     st.error(str(exc))
-    elif method == "粘贴文本":
-        pasted = st.text_area("粘贴入排标准", height=260, placeholder="Inclusion Criteria: ...")
-        if st.button("导入这段文本", type="primary"):
-            try:
-                set_source(source_from_text(pasted))
-                st.success("文本已载入。")
-            except SourceError as exc:
-                st.error(str(exc))
-    else:
-        uploaded = st.file_uploader("上传可搜索 PDF", type=["pdf"], accept_multiple_files=False)
-        st.caption("限制：20 MB、200 页；首版不支持扫描件 OCR。文件不会写入磁盘。")
-        if uploaded and st.button("提取 PDF 文本", type="primary"):
-            try:
-                extraction = extract_searchable_pdf(uploaded.getvalue(), uploaded.name)
-                source = TrialSource(
-                    source_type="pdf",
-                    identifier=uploaded.name,
-                    title=Path(uploaded.name).stem,
-                    source_reference=f"uploaded-pdf:{uploaded.name}",
-                    criteria_text=extraction.criteria_text,
-                    metadata={"page_count": extraction.page_count, "section_found": extraction.section_found},
-                )
-                set_source(source)
-                if extraction.warning:
-                    st.warning(extraction.warning)
-                else:
-                    st.success(f"已从 {extraction.page_count} 页 PDF 中定位入排标准章节。")
-            except (SourceError, PDFScannedError) as exc:
-                st.error(str(exc))
+        else:
+            st.markdown("**上传可搜索的文字型 PDF**")
+            uploaded = st.file_uploader("选择 PDF 文件", type=["pdf"], accept_multiple_files=False)
+            st.caption("限制：20 MB、200 页；首版不支持扫描件 OCR。文件只在当前会话内存中处理。")
+            if uploaded and st.button("提取入排标准", type="primary", use_container_width=True):
+                try:
+                    extraction = extract_searchable_pdf(uploaded.getvalue(), uploaded.name)
+                    source = TrialSource(
+                        source_type="pdf",
+                        identifier=uploaded.name,
+                        title=Path(uploaded.name).stem,
+                        source_reference=f"uploaded-pdf:{uploaded.name}",
+                        criteria_text=extraction.criteria_text,
+                        metadata={"page_count": extraction.page_count, "section_found": extraction.section_found},
+                    )
+                    set_source(source)
+                    if extraction.warning:
+                        st.warning(extraction.warning)
+                    else:
+                        st.success(f"已从 {extraction.page_count} 页 PDF 中定位入排标准章节。")
+                except (SourceError, PDFScannedError) as exc:
+                    st.error(str(exc))
 
     section_title("核对方案原文")
     source_summary()
@@ -535,12 +606,11 @@ def page_parse() -> None:
     coverage = traceable / len(st.session_state.criteria) * 100 if st.session_state.criteria else 0
     c4.metric("原文追溯率", f"{coverage:.0f}%")
 
-    section_title("生成与恢复")
+    section_title("解析来源")
     left, right = st.columns(2)
     with left:
         if st.button(
             "重新生成待审标准",
-            type="primary",
             use_container_width=True,
             disabled=not api_key or not live_enabled or required_chunks > remaining,
         ):
@@ -585,56 +655,68 @@ def page_parse() -> None:
         return
 
     section_title("逐条审核")
-    st.caption("原文与结构化结果并排展示。主观标准标记为“人工确认”，不会由规则引擎自动决定。")
-    frame = criteria_to_review_frame(st.session_state.criteria)
-    editable = st.data_editor(
-        frame,
-        width="stretch",
-        height=590,
-        hide_index=True,
-        num_rows="fixed",
-        disabled=["criterion_id"],
-        column_order=[
-            "criterion_id",
-            "kind",
-            "source_text",
-            "field",
-            "operator",
-            "value",
-            "unit",
-            "time_window_days",
-            "execution_status",
-            "confidence",
-        ],
-        column_config={
-            "criterion_id": st.column_config.TextColumn("编号", width="small"),
-            "kind": st.column_config.SelectboxColumn("类型", options=list(KIND_LABELS.values()), width="small"),
-            "operator": st.column_config.SelectboxColumn(
-                "判断条件",
-                options=list(OPERATOR_LABELS.values()),
-                width="medium",
-            ),
-            "execution_status": st.column_config.SelectboxColumn(
-                "执行方式", options=list(EXECUTION_LABELS.values()), width="medium"
-            ),
-            "confidence": st.column_config.ProgressColumn(
-                "结构化置信度", min_value=0.0, max_value=1.0, format="%.2f", width="medium"
-            ),
-            "source_text": st.column_config.TextColumn("标准原文", width="large"),
-            "field": st.column_config.TextColumn("结构化字段", width="large"),
-            "value": st.column_config.TextColumn("阈值", width="medium"),
-            "unit": st.column_config.TextColumn("单位", width="small"),
-            "time_window_days": st.column_config.NumberColumn("时间窗（天）", width="small"),
-        },
+    st.markdown(
+        "<div class='ts-action-guide'><strong>当前任务：确认规则可以按方案原文执行</strong>"
+        "<span>点击表格单元格可修改；重点核对阈值、单位、时间窗和“人工确认”项。完成后使用表格下方的蓝色按钮。</span></div>",
+        unsafe_allow_html=True,
     )
-    if st.button("确认并保存审核结果", type="primary"):
+    frame = criteria_to_review_frame(st.session_state.criteria)
+    with st.form("criteria_review_form", border=True):
+        editable = st.data_editor(
+            frame,
+            width="stretch",
+            height=520,
+            hide_index=True,
+            num_rows="fixed",
+            disabled=["criterion_id"],
+            column_order=[
+                "criterion_id",
+                "kind",
+                "source_text",
+                "field",
+                "operator",
+                "value",
+                "unit",
+                "time_window_days",
+                "execution_status",
+                "confidence",
+            ],
+            column_config={
+                "criterion_id": st.column_config.TextColumn("编号", width="small"),
+                "kind": st.column_config.SelectboxColumn("类型", options=list(KIND_LABELS.values()), width="small"),
+                "operator": st.column_config.SelectboxColumn(
+                    "判断条件",
+                    options=list(OPERATOR_LABELS.values()),
+                    width="medium",
+                ),
+                "execution_status": st.column_config.SelectboxColumn(
+                    "执行方式", options=list(EXECUTION_LABELS.values()), width="medium"
+                ),
+                "confidence": st.column_config.ProgressColumn(
+                    "结构化置信度", min_value=0.0, max_value=1.0, format="%.2f", width="medium"
+                ),
+                "source_text": st.column_config.TextColumn("标准原文", width="large"),
+                "field": st.column_config.TextColumn("结构化字段", width="large"),
+                "value": st.column_config.TextColumn("阈值", width="medium"),
+                "unit": st.column_config.TextColumn("单位", width="small"),
+                "time_window_days": st.column_config.NumberColumn("时间窗（天）", width="small"),
+            },
+        )
+        save_review = st.form_submit_button(
+            "保存审核并进入模拟预筛",
+            type="primary",
+            use_container_width=True,
+        )
+    if save_review:
         try:
             st.session_state.criteria = criteria_from_review_frame(editable)
             st.session_state.results = None
-            st.success("审核结果已保存到当前会话。")
+            go_to("患者预筛")
+            st.rerun()
         except ValueError as exc:
             st.error(str(exc))
 
+    st.caption("下载内容为当前已保存版本；表格中的未保存修改不会进入导出文件。")
     d1, d2 = st.columns(2)
     d1.download_button(
         "导出标准 JSON",
@@ -662,7 +744,12 @@ def page_screening() -> None:
     if not st.session_state.criteria:
         st.warning("请先完成标准解析。")
         return
-    if st.button("重新运行模拟预筛", type="primary"):
+    st.markdown(
+        "<div class='ts-action-guide'><strong>当前任务：执行已审核规则</strong>"
+        "<span>运行后先查看总体分布，再点击候选者结果表中的任意一行查看完整证据。</span></div>",
+        unsafe_allow_html=True,
+    )
+    if st.button("运行模拟预筛", type="primary"):
         with st.spinner("正在执行确定性规则..."):
             st.session_state.results = match_dataframe(
                 st.session_state.patients, st.session_state.criteria
@@ -686,11 +773,18 @@ def page_screening() -> None:
         format_func=lambda item: STATUS_LABELS[item],
     )
     selected_labels = {STATUS_LABELS[item] for item in status_filter}
-    st.dataframe(
-        display_frame[display_frame["overall_status"].isin(selected_labels)],
+    filtered_frame = display_frame[
+        display_frame["overall_status"].isin(selected_labels)
+    ].reset_index(drop=True)
+    st.caption("操作提示：点击一行即可在下方打开该候选者的逐条判定证据。")
+    selection_event = st.dataframe(
+        filtered_frame,
         width="stretch",
         height=390,
         hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="patient_results_table",
         column_config={
             "patient_id": st.column_config.TextColumn("候选者编号", width="small"),
             "overall_status": st.column_config.TextColumn("预筛状态", width="small"),
@@ -707,8 +801,17 @@ def page_screening() -> None:
         mime="text/csv",
     )
 
-    section_title("患者证据")
-    patient_id = st.selectbox("选择候选者", raw_frame["patient_id"].tolist())
+    section_title("候选者证据")
+    selection = getattr(selection_event, "selection", None)
+    selected_rows = getattr(selection, "rows", []) if selection is not None else []
+    if selected_rows and selected_rows[0] < len(filtered_frame):
+        st.session_state.selected_patient_id = str(
+            filtered_frame.iloc[selected_rows[0]]["patient_id"]
+        )
+    available_ids = raw_frame["patient_id"].astype(str).tolist()
+    if st.session_state.selected_patient_id not in available_ids:
+        st.session_state.selected_patient_id = available_ids[0]
+    patient_id = st.session_state.selected_patient_id
     result = next(item for item in results if item.patient_id == patient_id)
     st.markdown(
         f"<div class='ts-next-step'><strong>{escape(STATUS_LABELS[result.overall_status])}</strong><br>"
@@ -967,19 +1070,27 @@ def sidebar() -> str:
             unsafe_allow_html=True,
         )
         st.markdown("<div class='ts-nav-label'>工作流程</div>", unsafe_allow_html=True)
-        nav_labels = {
-            "项目说明": "项目概览",
-            "试验 / PDF 导入": "01　方案导入",
-            "标准解析": "02　标准审核",
-            "患者预筛": "03　模拟预筛",
-            "招募分析": "04　招募评估",
-        }
-        page = st.radio(
-            "工作流",
-            list(nav_labels),
-            key="navigation",
-            format_func=lambda item: nav_labels[item],
-            label_visibility="collapsed",
+        nav_items = [
+            ("项目说明", "项目概览"),
+            ("试验 / PDF 导入", "01  方案导入"),
+            ("标准解析", "02  标准审核"),
+            ("患者预筛", "03  模拟预筛"),
+            ("招募分析", "04  招募评估"),
+        ]
+        page = st.session_state.navigation
+        for index, (page_name, label) in enumerate(nav_items):
+            state = "active" if page_name == page else "idle"
+            with st.container(key=f"sidebar_nav_{index}_{state}"):
+                st.button(
+                    label,
+                    key=f"sidebar_nav_button_{index}",
+                    use_container_width=True,
+                    on_click=go_to,
+                    args=(page_name,),
+                )
+        st.markdown(
+            "<div class='ts-sidebar-help'>每一步都是可点击的操作入口；建议按 01–04 顺序完成。</div>",
+            unsafe_allow_html=True,
         )
         source: TrialSource = st.session_state.source
         st.markdown(
