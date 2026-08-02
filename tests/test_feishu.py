@@ -109,3 +109,76 @@ def test_sync_creates_and_updates_while_preserving_review_fields():
     assert "审核状态" not in update_fields
     assert "修改意见" not in update_fields
 
+
+def test_upsert_record_creates_aggregate_in_target_table():
+    calls: list[tuple[str, str, dict | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else None
+        calls.append((request.method, request.url.path, body))
+        if request.url.path.endswith("tenant_access_token/internal/"):
+            return httpx.Response(
+                200,
+                json={"code": 0, "tenant_access_token": "token", "expire": 7200},
+            )
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={"code": 0, "data": {"has_more": False, "items": []}},
+            )
+        return httpx.Response(200, json={"code": 0, "data": {}})
+
+    settings = FeishuSettings("app", "secret", "base", "criteria")
+    with FeishuClient(settings, transport=httpx.MockTransport(handler)) as client:
+        action = client.upsert_record(
+            "snapshots",
+            "快照键",
+            {"快照键": "NCT:scenario:1", "模拟符合人数": 12},
+        )
+
+    assert action == "created"
+    create_call = next(call for call in calls if call[1].endswith("batch_create"))
+    assert "/tables/snapshots/" in create_call[1]
+    assert create_call[2]["records"][0]["fields"]["模拟符合人数"] == 12
+
+
+def test_upsert_record_updates_matching_business_key():
+    calls: list[tuple[str, str, dict | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else None
+        calls.append((request.method, request.url.path, body))
+        if request.url.path.endswith("tenant_access_token/internal/"):
+            return httpx.Response(
+                200,
+                json={"code": 0, "tenant_access_token": "token", "expire": 7200},
+            )
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "has_more": False,
+                        "items": [
+                            {
+                                "record_id": "rec_snapshot",
+                                "fields": {"快照键": "NCT:scenario:1"},
+                            }
+                        ],
+                    },
+                },
+            )
+        return httpx.Response(200, json={"code": 0, "data": {}})
+
+    settings = FeishuSettings("app", "secret", "base", "criteria")
+    with FeishuClient(settings, transport=httpx.MockTransport(handler)) as client:
+        action = client.upsert_record(
+            "snapshots",
+            "快照键",
+            {"快照键": "NCT:scenario:1", "模拟符合人数": 14},
+        )
+
+    assert action == "updated"
+    update_call = next(call for call in calls if call[1].endswith("batch_update"))
+    assert update_call[2]["records"][0]["record_id"] == "rec_snapshot"

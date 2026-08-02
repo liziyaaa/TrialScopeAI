@@ -37,6 +37,8 @@ class FeishuSettings:
     app_secret: str
     base_token: str
     criteria_table_id: str
+    snapshot_table_id: str = ""
+    validation_table_id: str = ""
     base_url: str = FEISHU_BASE_URL
     workspace_url: str = ""
 
@@ -315,12 +317,13 @@ class FeishuClient:
         response = self._client.request(method, path, headers=headers, **kwargs)
         return self._decode(response)
 
-    def list_records(self) -> list[dict[str, Any]]:
+    def list_records(self, table_id: str | None = None) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
         page_token = ""
+        target_table_id = table_id or self.settings.criteria_table_id
         path = (
             f"/open-apis/bitable/v1/apps/{self.settings.base_token}/tables/"
-            f"{self.settings.criteria_table_id}/records"
+            f"{target_table_id}/records"
         )
         while True:
             params: dict[str, Any] = {"page_size": 500}
@@ -336,16 +339,55 @@ class FeishuClient:
                 break
         return records
 
-    def _batch_write(self, action: str, records: Iterable[dict[str, Any]]) -> None:
+    def _batch_write(
+        self,
+        action: str,
+        records: Iterable[dict[str, Any]],
+        *,
+        table_id: str | None = None,
+    ) -> None:
         items = list(records)
         if not items:
             return
+        target_table_id = table_id or self.settings.criteria_table_id
         path = (
             f"/open-apis/bitable/v1/apps/{self.settings.base_token}/tables/"
-            f"{self.settings.criteria_table_id}/records/{action}"
+            f"{target_table_id}/records/{action}"
         )
         for start in range(0, len(items), 200):
             self._request("POST", path, json={"records": items[start : start + 200]})
+
+    def upsert_record(
+        self,
+        table_id: str,
+        key_field: str,
+        fields: dict[str, Any],
+    ) -> str:
+        """Create or update one aggregate record using a stable business key."""
+
+        if not table_id.strip():
+            raise FeishuConfigurationError("目标飞书数据表尚未配置。")
+        key_value = fields.get(key_field)
+        if key_value in (None, ""):
+            raise FeishuConfigurationError(f"飞书记录缺少唯一键：{key_field}。")
+        existing = self.list_records(table_id)
+        current = next(
+            (
+                record
+                for record in existing
+                if _record_fields(record).get(key_field) == key_value
+            ),
+            None,
+        )
+        if current is None:
+            self._batch_write("batch_create", [{"fields": fields}], table_id=table_id)
+            return "created"
+        self._batch_write(
+            "batch_update",
+            [{"record_id": current.get("record_id"), "fields": fields}],
+            table_id=table_id,
+        )
+        return "updated"
 
     def sync_criteria(
         self,

@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 from collections import Counter
+from datetime import datetime, time as datetime_time
 from html import escape
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.express as px
@@ -105,6 +107,8 @@ def init_state() -> None:
         "live_calls": 0,
         "scenario_comparison": None,
         "scenario_results": None,
+        "scenario_parameters": {},
+        "scenario_snapshot_key": "",
         "feishu_pending_criteria": None,
         "feishu_review_diffs": [],
         "feishu_sync_note": "",
@@ -123,6 +127,8 @@ def set_source(source: TrialSource, criteria_text: str | None = None) -> None:
     st.session_state.results = None
     st.session_state.scenario_comparison = None
     st.session_state.scenario_results = None
+    st.session_state.scenario_parameters = {}
+    st.session_state.scenario_snapshot_key = ""
     if source.identifier == "NCT02347774":
         st.session_state.criteria = load_cached_demo_criteria()
         st.session_state.last_parse_note = "该案例可直接使用审核后的缓存标准，也可重新调用 DeepSeek。"
@@ -313,6 +319,8 @@ def feishu_settings() -> FeishuSettings:
         app_secret=str(read_setting("FEISHU_APP_SECRET", "") or ""),
         base_token=str(read_setting("FEISHU_BITABLE_APP_TOKEN", "") or ""),
         criteria_table_id=str(read_setting("FEISHU_CRITERIA_TABLE_ID", "") or ""),
+        snapshot_table_id=str(read_setting("FEISHU_SNAPSHOT_TABLE_ID", "") or ""),
+        validation_table_id=str(read_setting("FEISHU_VALIDATION_TABLE_ID", "") or ""),
         workspace_url=str(read_setting("FEISHU_BITABLE_URL", "") or ""),
     )
 
@@ -997,7 +1005,9 @@ def page_collaboration() -> None:
                     "FEISHU_APP_ID = \"cli_xxx\"\n"
                     "FEISHU_APP_SECRET = \"...\"\n"
                     "FEISHU_BITABLE_APP_TOKEN = \"bascxxx\"\n"
-                    "FEISHU_CRITERIA_TABLE_ID = \"tblxxx\"",
+                    "FEISHU_CRITERIA_TABLE_ID = \"tblxxx\"\n"
+                    "FEISHU_SNAPSHOT_TABLE_ID = \"tblxxx\"\n"
+                    "FEISHU_VALIDATION_TABLE_ID = \"tblxxx\"",
                     language="toml",
                 )
 
@@ -1310,6 +1320,16 @@ def page_analysis() -> None:
         infection_days = row2[3].number_input("感染窗口（天）", 1, 365, 42)
 
         if st.button("运行情景比较", type="primary"):
+            scenario_parameters = {
+                "最低年龄": age_min,
+                "最低吸烟包年": pack_years,
+                "FEV1预计值上限": fev1_pct,
+                "FEV1容量下限_L": fev1_liters,
+                "FEV1_FVC上限": ratio,
+                "每日氧疗上限_小时": oxygen,
+                "急性加重窗口_天": exacerbation_days,
+                "感染窗口_天": infection_days,
+            }
             scenario_criteria = apply_scenario(
                 criteria,
                 {
@@ -1328,6 +1348,11 @@ def page_analysis() -> None:
             )
             st.session_state.scenario_comparison = comparison
             st.session_state.scenario_results = scenario_results
+            st.session_state.scenario_parameters = scenario_parameters
+            st.session_state.scenario_snapshot_key = (
+                f"{st.session_state.source.identifier}:scenario:"
+                f"{datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y%m%d%H%M%S')}"
+            )
 
     if st.session_state.scenario_comparison is not None:
         comparison = st.session_state.scenario_comparison
@@ -1353,6 +1378,65 @@ def page_analysis() -> None:
             width="stretch",
             config={"displayModeBar": False},
         )
+
+        settings = feishu_settings()
+        if (
+            bool_setting("ENABLE_FEISHU_SYNC", False)
+            and settings.configured
+            and settings.snapshot_table_id
+        ):
+            with st.expander("保存本次情景快照", expanded=False):
+                st.caption("只保存汇总人数、调整参数和审核意见，不同步候选者明细。")
+                scenario_name = st.selectbox(
+                    "情景名称",
+                    ["自定义", "适度放宽", "适度收紧", "基线"],
+                    key="feishu_scenario_name",
+                )
+                scenario_note = st.text_area(
+                    "医学或统计审核意见（可稍后在飞书补充）",
+                    key="feishu_scenario_note",
+                )
+                if st.button(
+                    "保存到飞书方案快照",
+                    use_container_width=True,
+                    key="save_feishu_scenario",
+                ):
+                    scenario_counts = Counter(
+                        item.overall_status for item in st.session_state.scenario_results
+                    )
+                    snapshot_fields = {
+                        "快照键": st.session_state.scenario_snapshot_key,
+                        "试验编号": st.session_state.source.identifier,
+                        "分析版本": 1,
+                        "情景名称": scenario_name,
+                        "合成候选人数": len(patients),
+                        "模拟符合人数": scenario_counts.get("eligible", 0),
+                        "不符合人数": scenario_counts.get("ineligible", 0),
+                        "信息不足人数": scenario_counts.get("missing_data", 0),
+                        "人工复核人数": scenario_counts.get("needs_review", 0),
+                        "主要排除原因": f"{top_blocker_name}（基线影响 {top_blocker_count} 人）",
+                        "调整参数": json.dumps(
+                            st.session_state.scenario_parameters,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                        "人数变化": int(eligible_row["change"]),
+                        "代表性变化": "合成队列结果；人群构成变化需结合页面图表复核",
+                        "医学统计意见": scenario_note.strip(),
+                        "应用链接": "https://trialscopeai.streamlit.app/",
+                    }
+                    try:
+                        with st.spinner("正在保存方案快照..."):
+                            with FeishuClient(settings) as client:
+                                action = client.upsert_record(
+                                    settings.snapshot_table_id,
+                                    "快照键",
+                                    snapshot_fields,
+                                )
+                        verb = "新建" if action == "created" else "更新"
+                        st.success(f"已在飞书方案快照表中{verb}本次汇总。")
+                    except FeishuError as exc:
+                        st.error(str(exc))
 
     report = build_markdown_report(st.session_state.source.title, patients, results, criteria)
     st.download_button(
@@ -1457,6 +1541,95 @@ def page_validation() -> None:
         file_name="trialscope_validation_log.csv",
         mime="text/csv",
     )
+
+    settings = feishu_settings()
+    if (
+        bool_setting("ENABLE_FEISHU_SYNC", False)
+        and settings.configured
+        and settings.validation_table_id
+    ):
+        with st.expander("记录一次真实验证", expanded=False):
+            st.caption("请只填写实际完成的测试；尚未测得的数据不要用估计值代替。")
+            with st.form("feishu_validation_form"):
+                form_row_1 = st.columns(3)
+                validation_type = form_row_1[0].selectbox(
+                    "测试类型",
+                    ["规则边界", "完整路径", "提取准确性", "工作效率"],
+                )
+                tester = form_row_1[1].text_input("测试人员")
+                test_date = form_row_1[2].date_input("测试日期")
+                form_row_2 = st.columns(4)
+                total_criteria = form_row_2[0].number_input(
+                    "标准总数", min_value=0, value=len(criteria), step=1
+                )
+                extracted_count = form_row_2[1].number_input(
+                    "自动提取数", min_value=0, value=0, step=1
+                )
+                modified_count = form_row_2[2].number_input(
+                    "人工修改数", min_value=0, value=0, step=1
+                )
+                omitted_count = form_row_2[3].number_input(
+                    "遗漏数", min_value=0, value=0, step=1
+                )
+                form_row_3 = st.columns(4)
+                manual_minutes = form_row_3[0].number_input(
+                    "人工耗时（分钟）", min_value=0.0, value=0.0, step=0.5
+                )
+                assisted_minutes = form_row_3[1].number_input(
+                    "辅助耗时（分钟）", min_value=0.0, value=0.0, step=0.5
+                )
+                field_f1 = form_row_3[2].number_input(
+                    "字段 F1", min_value=0.0, max_value=1.0, value=0.0, step=0.01
+                )
+                traceability_rate = form_row_3[3].number_input(
+                    "来源追溯率", min_value=0.0, max_value=1.0, value=0.0, step=0.01
+                )
+                version = st.text_input("版本", value="v1")
+                validation_note = st.text_area("备注")
+                submit_validation = st.form_submit_button(
+                    "保存到飞书验证记录",
+                    use_container_width=True,
+                )
+            if submit_validation:
+                normalized_tester = tester.strip() or "未署名"
+                validation_key = (
+                    f"{st.session_state.source.identifier}:{validation_type}:"
+                    f"{test_date.isoformat()}:{normalized_tester}"
+                )
+                test_datetime = datetime.combine(
+                    test_date,
+                    datetime_time.min,
+                    tzinfo=ZoneInfo("Asia/Shanghai"),
+                )
+                validation_fields = {
+                    "验证键": validation_key,
+                    "试验编号": st.session_state.source.identifier,
+                    "测试类型": validation_type,
+                    "标准总数": int(total_criteria),
+                    "自动提取数": int(extracted_count),
+                    "人工修改数": int(modified_count),
+                    "遗漏数": int(omitted_count),
+                    "人工耗时分钟": float(manual_minutes),
+                    "辅助耗时分钟": float(assisted_minutes),
+                    "字段F1": float(field_f1),
+                    "来源追溯率": float(traceability_rate),
+                    "测试人员": normalized_tester,
+                    "版本": version.strip() or "v1",
+                    "备注": validation_note.strip(),
+                    "测试日期": int(test_datetime.timestamp() * 1000),
+                }
+                try:
+                    with st.spinner("正在保存验证记录..."):
+                        with FeishuClient(settings) as client:
+                            action = client.upsert_record(
+                                settings.validation_table_id,
+                                "验证键",
+                                validation_fields,
+                            )
+                    verb = "新建" if action == "created" else "更新"
+                    st.success(f"已在飞书验证记录表中{verb}本次数据。")
+                except FeishuError as exc:
+                    st.error(str(exc))
 
     section_title("不能从当前结果推出什么")
     boundary_columns = st.columns(3)
