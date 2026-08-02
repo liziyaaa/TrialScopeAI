@@ -1,7 +1,7 @@
 # TrialScopeAI
 
 > **2026 AI先锋未来人才大赛 · 健康元药业企业命题**<br>
-> 临床试验入排标准结构化与招募可行性评估助手
+> 临床试验招募可行性评估与协同审核工作台
 
 我们希望回答一个具体问题：**一份复杂的临床试验方案进入多中心执行前，能否先看清哪些入排标准最影响招募、哪些患者信息容易缺失，以及潜在参与人群是否发生偏移？**
 
@@ -30,10 +30,12 @@ TrialScopeAI 将方案中的自然语言入排标准转为可审核规则，在�
 flowchart LR
     A["NCT 编号 / 标准文本 / 文字型 PDF"] --> B["定位并确认入排标准原文"]
     B --> C["大模型提取字段、阈值与时间窗"]
-    C --> D["医学人员逐条审核"]
-    D --> E["确定性规则引擎"]
-    F["500 名固定种子合成候选者"] --> E
-    E --> G["模拟符合 / 不符合 / 信息不足 / 人工复核"]
+    C --> D["同步至飞书多维表格"]
+    D --> E["医学人员协同审核与留痕"]
+    E --> K["读取差异并人工确认"]
+    K --> L["确定性规则引擎"]
+    F["500 名固定种子合成候选者"] --> L
+    L --> G["模拟符合 / 不符合 / 信息不足 / 人工复核"]
     G --> H["逐候选者证据链"]
     G --> I["招募漏斗、数据缺口与代表性分析"]
     I --> J["条件情景比较"]
@@ -45,11 +47,12 @@ flowchart LR
 
 打开 **[在线演示](https://trialscopeai.streamlit.app/)** 后，可按以下顺序体验：
 
-1. **项目概览**：查看四项任务、当前研究和原型结果；
+1. **项目概览**：了解五步业务流程、当前研究、验证证据和数据边界；
 2. **02 标准审核**：浏览 27 条结构化标准，核对原文、字段、阈值、单位、时间窗和执行方式；
-3. **03 模拟预筛**：点击“运行模拟预筛”，再点击任一候选者，查看每条标准的患者值、判断原因与方案原文；
-4. **04 招募评估**：查看筛减漏斗、主要未通过标准、缺失字段和人群代表性；
-5. 展开**情景比较**，调整年龄、吸烟包年、FEV1 或时间窗，观察候选人数和构成变化。
+3. **03 协作确认**：查看飞书协作流程、待审核数据和无配置时的审核模板；
+4. **04 模拟预筛**：点击“运行模拟预筛”，再点击任一候选者，查看每条标准的患者值、判断原因与方案原文；
+5. **05 招募评估**：查看筛减漏斗、主要未通过标准、缺失字段和人群代表性，并展开情景比较；
+6. **验证证据与边界**：区分已完成的工程验证、待采集的业务证据和当前不能外推的结论。
 
 若希望体验输入能力，可在 **01 方案导入** 中选择 NCT 编号、粘贴标准原文、上传文字型 PDF，或重新载入内置演示。
 
@@ -60,6 +63,7 @@ flowchart LR
 | 方案导入 | NCT 编号、粘贴文本、文字型 PDF、内置案例 | 原文确认后才进入解析，不对扫描件生成猜测结果 |
 | 标准结构化 | 提取字段、运算符、阈值、单位、时间窗、适用条件与原文来源 | GOLDEN-4 提供 27 条人工审核标准 |
 | 医学审核 | 可逐条修改结构化结果，主观标准标为人工确认 | 保存后才进入模拟预筛 |
+| 飞书协同 | 结构化标准同步至多维表格，审核结果回读前展示差异 | 系统字段与医学审核字段分开保存，不静默覆盖规则 |
 | 确定性预筛 | 输出“模拟符合 / 不符合 / 信息不足 / 人工复核” | 每个结论保留患者值、标准值、原因和原文 |
 | 招募评估 | 漏斗、主要筛减项、缺失字段、年龄/性别/疾病程度代表性 | 可定位最主要的候选池损失环节 |
 | 情景比较 | 年龄、吸烟史、FEV1、FEV1/FVC、氧疗和时间窗 | 比较候选人数与人群构成变化 |
@@ -91,7 +95,7 @@ flowchart LR
 | GOLDEN-4 人工审核规则 | 27 条 | 覆盖类型、字段、运算符、阈值、单位、时间窗和原文来源 |
 | 合成 COPD 候选者 | 500 名 | 固定随机种子 `20260716`，结果可复现 |
 | 独立边界病例 | 50 个 | 覆盖阈值相等、缺失值、单位、时间窗、主观标准和多重失败 |
-| 自动化测试 | 40 项通过 | 覆盖规则、PDF、NCT、模型模拟响应、缓存限额、分析和 Streamlit 完整路径 |
+| 自动化测试 | 45 项通过 | 覆盖规则、PDF、NCT、模型响应、飞书同步、审核差异、分析和 Streamlit 完整路径 |
 | 真实患者记录 | 0 条 | 当前不采集、不处理个人医疗信息 |
 
 结构化提取 F1 ≥ 0.85、患者匹配准确率 ≥ 90% 是下一阶段验收目标，**不是我们已经实现的企业效果**。真实效率提升还需要在健康元医学、统计与运营人员参与的试点中测量。
@@ -145,6 +149,24 @@ streamlit run app.py
 </details>
 
 <details>
+<summary><strong>可选：配置飞书协同审核</strong></summary>
+
+在 Streamlit Secrets 中配置飞书自建应用和指定多维表格。应用密钥不得提交到仓库。
+
+```toml
+ENABLE_FEISHU_SYNC = true
+FEISHU_APP_ID = "your-feishu-app-id"
+FEISHU_APP_SECRET = "your-feishu-app-secret"
+FEISHU_BITABLE_APP_TOKEN = "your-base-token"
+FEISHU_CRITERIA_TABLE_ID = "your-criteria-table-id"
+FEISHU_BITABLE_URL = "https://your-tenant.feishu.cn/base/your-base-token"
+```
+
+同步只发送结构化标准和审核元数据，不发送 PDF 正文或患者级数据。系统写入字段与审核字段分离；读取审核结果后，必须在应用中确认差异才会更新当前规则。
+
+</details>
+
+<details>
 <summary><strong>可选：配置 DeepSeek 实时结构化</strong></summary>
 
 复制 `.streamlit/secrets.example.toml` 为不进入版本控制的 `.streamlit/secrets.toml`：
@@ -176,6 +198,7 @@ GitHub Actions 会在 `main` 更新和 Pull Request 上使用 Python 3.12 运行
 - `app.py`：单入口 Streamlit 工作台；
 - `src/trial_sources.py`：NCT、文本和内存 PDF 导入；
 - `src/llm_parser.py`：DeepSeek JSON 解析、校验、缓存与限额；
+- `src/feishu.py`：飞书应用鉴权、标准同步、审核回读和差异生成；
 - `src/rules.py`：确定性规则、结果优先级与证据链；
 - `src/analytics.py`：漏斗、筛减原因、代表性和情景比较；
 - `src/synthetic.py`：可复现合成队列与边界病例；
@@ -189,6 +212,7 @@ GitHub Actions 会在 `main` 更新和 Pull Request 上使用 Python 3.12 运行
 - [FDA: Enhancing the Diversity of Clinical Trial Populations](https://www.fda.gov/regulatory-information/search-fda-guidance-documents/enhancing-diversity-clinical-trial-populations-eligibility-criteria-enrollment-practices-and-trial)
 - [DeepSeek API](https://api-docs.deepseek.com/)
 - [DeepSeek JSON Output](https://api-docs.deepseek.com/guides/json_mode/)
+- [飞书多维表格 OpenAPI](https://open.feishu.cn/document/server-docs/docs/bitable-v1/bitable-overview)
 
 ## 免责声明
 

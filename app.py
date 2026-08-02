@@ -23,6 +23,13 @@ from src.analytics import (
     representation_table,
     scenario_comparison,
 )
+from src.feishu import (
+    FeishuClient,
+    FeishuError,
+    FeishuSettings,
+    apply_reviewed_records,
+    criterion_to_feishu_fields,
+)
 from src.config import (
     DATA_DIR,
     DEEPSEEK_DEFAULT_MODEL,
@@ -47,7 +54,7 @@ from src.trial_sources import (
 
 
 st.set_page_config(
-    page_title="TrialScope | 招募可行性评估",
+    page_title="TrialScope | 招募可行性与协同审核",
     page_icon="T",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -98,6 +105,9 @@ def init_state() -> None:
         "live_calls": 0,
         "scenario_comparison": None,
         "scenario_results": None,
+        "feishu_pending_criteria": None,
+        "feishu_review_diffs": [],
+        "feishu_sync_note": "",
         "last_parse_note": "已载入医学审核的 GOLDEN-4 缓存标准。",
     }
     for key, value in defaults.items():
@@ -274,6 +284,124 @@ def criteria_json_bytes(criteria: list[Criterion]) -> bytes:
     ).encode("utf-8")
 
 
+def feishu_review_template(criteria: list[Criterion], trial_id: str) -> pd.DataFrame:
+    """Build an importable review sheet without exposing credentials or patient data."""
+
+    rows: list[dict[str, Any]] = []
+    for criterion in criteria:
+        row = criterion_to_feishu_fields(trial_id, criterion)
+        row.update(
+            {
+                "审核状态": "需专家复核"
+                if criterion.execution_status == "human_review"
+                else "待审核",
+                "审核人": "",
+                "修改意见": "",
+                "审核后指标": criterion.field or "",
+                "审核后运算符": OPERATOR_LABELS.get(criterion.operator, criterion.operator),
+                "审核后阈值": json.dumps(criterion.value, ensure_ascii=False),
+                "审核后单位": criterion.unit or "",
+            }
+        )
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def feishu_settings() -> FeishuSettings:
+    return FeishuSettings(
+        app_id=str(read_setting("FEISHU_APP_ID", "") or ""),
+        app_secret=str(read_setting("FEISHU_APP_SECRET", "") or ""),
+        base_token=str(read_setting("FEISHU_BITABLE_APP_TOKEN", "") or ""),
+        criteria_table_id=str(read_setting("FEISHU_CRITERIA_TABLE_ID", "") or ""),
+        workspace_url=str(read_setting("FEISHU_BITABLE_URL", "") or ""),
+    )
+
+
+def render_feishu_review_panel() -> None:
+    section_title("飞书协同审核")
+    st.markdown(
+        "<div class='ts-boundary'><b>同步边界：</b>仅同步结构化标准和审核信息；"
+        "不上传 PDF 正文，也不发送任何患者级数据。</div>",
+        unsafe_allow_html=True,
+    )
+    settings = feishu_settings()
+    if not bool_setting("ENABLE_FEISHU_SYNC", False):
+        st.info("飞书协同当前未启用。本地审核和模拟分析仍可正常使用。")
+        return
+    if not settings.configured:
+        st.warning("飞书协同已启用，但应用凭证或多维表格标识尚未填写完整。")
+        return
+
+    columns = st.columns(2)
+    sync_clicked = columns[0].button(
+        "同步至飞书审核",
+        use_container_width=True,
+        help="只更新系统生成字段，不覆盖审核状态、审核人和修改意见。",
+    )
+    pull_clicked = columns[1].button(
+        "读取飞书审核结果",
+        use_container_width=True,
+        help="读取审核字段并生成修改差异，确认后才会更新当前规则。",
+    )
+    if settings.workspace_url:
+        st.link_button("打开飞书审核中心", settings.workspace_url, use_container_width=True)
+
+    if sync_clicked:
+        try:
+            with st.spinner("正在同步结构化标准..."):
+                with FeishuClient(settings) as client:
+                    summary = client.sync_criteria(
+                        st.session_state.source.identifier,
+                        st.session_state.criteria,
+                    )
+            st.session_state.feishu_sync_note = (
+                f"同步完成：新增 {summary.created} 条，更新 {summary.updated} 条，"
+                f"无变化 {summary.unchanged} 条。"
+            )
+            st.success(st.session_state.feishu_sync_note)
+        except FeishuError as exc:
+            st.error(str(exc))
+
+    if pull_clicked:
+        try:
+            with st.spinner("正在读取医学审核结果..."):
+                with FeishuClient(settings) as client:
+                    records = client.list_records()
+                reviewed, diffs = apply_reviewed_records(
+                    st.session_state.criteria,
+                    records,
+                    trial_id=st.session_state.source.identifier,
+                )
+            st.session_state.feishu_pending_criteria = reviewed
+            st.session_state.feishu_review_diffs = diffs
+            if diffs:
+                st.info(f"读取完成，发现 {len(diffs)} 处待确认修改。")
+            else:
+                st.success("读取完成，飞书审核值与当前规则没有差异。")
+        except FeishuError as exc:
+            st.error(str(exc))
+
+    pending = st.session_state.feishu_pending_criteria
+    diffs = st.session_state.feishu_review_diffs
+    if pending is not None and diffs:
+        st.dataframe(pd.DataFrame(diffs), width="stretch", hide_index=True)
+        confirm, cancel = st.columns(2)
+        if confirm.button("确认采用飞书审核结果", type="primary", use_container_width=True):
+            st.session_state.criteria = pending
+            st.session_state.results = None
+            st.session_state.feishu_pending_criteria = None
+            st.session_state.feishu_review_diffs = []
+            st.success("飞书审核结果已应用到当前规则。")
+            st.rerun()
+        if cancel.button("暂不采用", use_container_width=True):
+            st.session_state.feishu_pending_criteria = None
+            st.session_state.feishu_review_diffs = []
+            st.rerun()
+
+    if st.session_state.feishu_sync_note:
+        st.caption(st.session_state.feishu_sync_note)
+
+
 def ensure_results() -> None:
     if st.session_state.results is None and st.session_state.criteria:
         st.session_state.results = match_dataframe(
@@ -349,7 +477,7 @@ def source_summary() -> None:
 
 
 def workflow_strip(active_step: int) -> None:
-    names = ["方案导入", "标准审核", "模拟预筛", "招募评估"]
+    names = ["方案导入", "标准审核", "协作确认", "模拟预筛", "招募评估"]
     parts = []
     for number, name in enumerate(names, start=1):
         state = "done" if number < active_step else "active" if number == active_step else ""
@@ -405,10 +533,28 @@ def task_row(
 
 
 def page_home() -> None:
-    page_header(
-        "GOLDEN-4 招募可行性评估",
-        "基于公开试验方案与合成候选者，审核入排标准并定位可能影响招募的关键条件。",
-        "项目概览",
+    st.markdown(
+        """
+        <div class="ts-hero">
+            <div class="ts-hero-copy">
+                <div class="ts-version">40 强赛 · 工作原型</div>
+                <h1>临床试验招募可行性<br>评估与协同审核工作台</h1>
+                <p>把方案中的入排标准转成可审核规则，在不使用真实患者数据的前提下，提前定位招募瓶颈、数据缺口和人群构成变化。</p>
+                <div class="ts-hero-meta">
+                    <span>公开试验方案</span><span>确定性规则</span><span>医学人员最终确认</span>
+                </div>
+            </div>
+            <div class="ts-hero-aside">
+                <div class="ts-hero-aside-label">当前演示</div>
+                <div class="ts-hero-aside-value">GOLDEN-4</div>
+                <div class="ts-hero-aside-note">NCT02347774 · COPD Ⅲ期</div>
+                <div class="ts-hero-aside-line"></div>
+                <div class="ts-hero-aside-label">数据边界</div>
+                <div class="ts-hero-aside-value">0 条真实患者记录</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
     source_summary()
     ensure_results()
@@ -425,20 +571,67 @@ def page_home() -> None:
     for column, (label, value, help_text) in zip(cols, metrics):
         column.metric(label, value, help=help_text)
 
-    section_title("开始一次评估")
-    st.caption("按顺序完成四项任务；右侧按钮是每一步的操作入口。当前建议先审核结构化标准。")
+    section_title("完成一次可追溯评估")
+    st.caption("五个步骤分别对应方案、医学、协作、计算和决策；右侧按钮就是下一步操作入口。")
+    settings = feishu_settings()
+    collaboration_ready = bool_setting("ENABLE_FEISHU_SYNC", False) and settings.configured
     task_row("01", "导入试验方案", "确认 NCT、粘贴文本或 PDF 中的入排标准原文", "已载入", "试验 / PDF 导入", "查看")
-    task_row("02", "审核结构化标准", "核对字段、阈值、时间窗及需要人工判断的条件", "当前任务", "标准解析", "继续审核", active=True)
-    task_row("03", "运行模拟预筛", "在 500 名合成候选者中执行已确认规则", "可运行", "患者预筛", "打开")
-    task_row("04", "评估招募可行性", "查看筛减瓶颈、数据缺口、代表性与情景变化", "可查看", "招募分析", "打开")
-
-    section_title("数据使用范围")
-    st.markdown(
-        "<div class='ts-insight'><div class='ts-insight-label'>当前演示数据</div>"
-        "<div class='ts-insight-value'>0 条真实患者记录</div>"
-        "<div class='ts-insight-note'>公开试验方案 + 500 名固定随机种子的合成候选者，结果可复现。</div></div>",
-        unsafe_allow_html=True,
+    task_row("02", "审核结构化标准", "核对字段、阈值、时间窗及需要人工判断的条件", "可审核", "标准解析", "打开")
+    task_row(
+        "03",
+        "完成跨角色确认",
+        "将结构化标准同步至飞书，保留审核人、意见和版本记录",
+        "已连接" if collaboration_ready else "待连接",
+        "协作审核",
+        "进入审核",
+        active=True,
     )
+    task_row("04", "运行模拟预筛", "在 500 名合成候选者中执行已确认规则", "可运行", "患者预筛", "打开")
+    task_row("05", "评估招募可行性", "查看筛减瓶颈、数据缺口、代表性与情景变化", "可查看", "招募分析", "打开")
+
+    section_title("这次评估回答三个问题")
+    objective_columns = st.columns(3)
+    objectives = [
+        ("01", "方案能否被执行", "哪些标准可以转成规则，哪些必须由医学人员判断。"),
+        ("02", "招募可能卡在哪里", "哪些条件造成主要筛减，哪些字段缺失会阻断判断。"),
+        ("03", "调整后人群如何变化", "比较候选人数与代表性变化，但不直接建议修改方案。"),
+    ]
+    for column, (number, title, note) in zip(objective_columns, objectives):
+        with column:
+            st.markdown(
+                f"<div class='ts-objective'><div class='ts-objective-number'>{number}</div>"
+                f"<div class='ts-objective-title'>{escape(title)}</div>"
+                f"<div class='ts-objective-note'>{escape(note)}</div></div>",
+                unsafe_allow_html=True,
+            )
+
+    validation_col, boundary_col = st.columns(2, gap="large")
+    with validation_col:
+        section_title("当前验证")
+        st.markdown(
+            "<div class='ts-proof-list'>"
+            "<div><b>27 条</b><span>人工审核的 GOLDEN-4 结构化标准</span></div>"
+            "<div><b>50 例</b><span>阈值、缺失值、时间窗和主观标准边界案例</span></div>"
+            "<div><b>45 项</b><span>当前自动化测试，支持无网络演示路径</span></div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        st.button(
+            "查看验证证据",
+            use_container_width=True,
+            on_click=go_to,
+            args=("验证证据",),
+        )
+    with boundary_col:
+        section_title("数据使用范围")
+        st.markdown(
+            "<div class='ts-proof-list'>"
+            "<div><b>公开</b><span>ClinicalTrials.gov 试验方案</span></div>"
+            "<div><b>合成</b><span>固定随机种子的候选队列</span></div>"
+            "<div><b>人工确认</b><span>医学判断不交给模型自动决定</span></div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
 
     st.markdown(
         "<div class='ts-boundary'><b>使用边界：</b>本工具用于试验设计与招募可行性讨论，不诊断、不自动入组，也不替代研究者、统计人员或伦理委员会。</div>",
@@ -703,7 +896,7 @@ def page_parse() -> None:
             },
         )
         save_review = st.form_submit_button(
-            "保存审核并进入模拟预筛",
+            "保存审核并进入协作确认",
             type="primary",
             use_container_width=True,
         )
@@ -711,7 +904,7 @@ def page_parse() -> None:
         try:
             st.session_state.criteria = criteria_from_review_frame(editable)
             st.session_state.results = None
-            go_to("患者预筛")
+            go_to("协作审核")
             st.rerun()
         except ValueError as exc:
             st.error(str(exc))
@@ -734,13 +927,122 @@ def page_parse() -> None:
     )
 
 
+def page_collaboration() -> None:
+    page_header(
+        "协作审核中心",
+        "把结构化标准交给医学与运营人员确认，在飞书中保留审核状态、修改意见和版本记录。",
+        "03 · 协作确认",
+    )
+    workflow_strip(3)
+    if not st.session_state.criteria:
+        st.warning("请先完成标准解析与本地审核。")
+        st.button("返回标准审核", type="primary", on_click=go_to, args=("标准解析",))
+        return
+
+    settings = feishu_settings()
+    enabled = bool_setting("ENABLE_FEISHU_SYNC", False)
+    configured = settings.configured
+    status_columns = st.columns(3)
+    with status_columns[0]:
+        insight_card("待协作标准", f"{len(st.session_state.criteria)} 条", "只同步结构化标准与审核字段")
+    with status_columns[1]:
+        human_review_count = sum(
+            item.execution_status == "human_review" for item in st.session_state.criteria
+        )
+        insight_card("需人工判断", f"{human_review_count} 条", "模型不执行主观医学判断")
+    with status_columns[2]:
+        insight_card(
+            "飞书连接",
+            "已就绪" if enabled and configured else "待配置",
+            "不影响本地演示与规则计算",
+        )
+
+    section_title("协作流程")
+    st.markdown(
+        """
+        <div class="ts-handoff">
+            <div><span>1</span><b>同步标准</b><p>系统字段写入飞书，不覆盖已有审核意见。</p></div>
+            <div><span>2</span><b>专业确认</b><p>医学人员标记已确认、需修改或需专家复核。</p></div>
+            <div><span>3</span><b>读取差异</b><p>只读取审核字段，先展示修改前后差异。</p></div>
+            <div><span>4</span><b>人工采用</b><p>用户确认后，审核结果才进入规则引擎。</p></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    template = feishu_review_template(
+        st.session_state.criteria,
+        st.session_state.source.identifier,
+    )
+    if enabled and configured:
+        render_feishu_review_panel()
+    else:
+        st.markdown(
+            "<div class='ts-connection-empty'><div class='ts-connection-title'>飞书尚未连接</div>"
+            "<p>目前可以先下载审核模板或跳过协作步骤。完成自建应用授权后，页面会自动显示同步和读取按钮。</p></div>",
+            unsafe_allow_html=True,
+        )
+        action_columns = st.columns(2)
+        action_columns[0].download_button(
+            "下载飞书审核模板 CSV",
+            data=template.to_csv(index=False).encode("utf-8-sig"),
+            file_name="trialscope_feishu_review_template.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+        with action_columns[1]:
+            with st.expander("查看接入所需配置", expanded=False):
+                st.code(
+                    "ENABLE_FEISHU_SYNC = true\n"
+                    "FEISHU_APP_ID = \"cli_xxx\"\n"
+                    "FEISHU_APP_SECRET = \"...\"\n"
+                    "FEISHU_BITABLE_APP_TOKEN = \"bascxxx\"\n"
+                    "FEISHU_CRITERIA_TABLE_ID = \"tblxxx\"",
+                    language="toml",
+                )
+
+    section_title("待审核数据预览")
+    preview_columns = [
+        "标准编号",
+        "类型",
+        "标准原文",
+        "结构化指标",
+        "运算符",
+        "阈值",
+        "执行方式",
+        "审核状态",
+        "修改意见",
+    ]
+    st.dataframe(
+        template[preview_columns],
+        width="stretch",
+        height=390,
+        hide_index=True,
+        column_config={
+            "标准编号": st.column_config.TextColumn(width="small"),
+            "类型": st.column_config.TextColumn(width="small"),
+            "标准原文": st.column_config.TextColumn(width="large"),
+            "结构化指标": st.column_config.TextColumn(width="medium"),
+            "修改意见": st.column_config.TextColumn(width="large"),
+        },
+    )
+    st.caption("预览不包含患者级数据；飞书审核不是模拟预筛的强制前置条件。")
+    st.button(
+        "继续运行模拟预筛",
+        type="primary",
+        use_container_width=True,
+        on_click=go_to,
+        args=("患者预筛",),
+    )
+
+
 def page_screening() -> None:
     page_header(
         "模拟预筛",
         "在 500 名合成候选者中执行已审核规则，并为每项判断保留患者值、条件和方案原文。",
-        "03 · 模拟预筛",
+        "04 · 模拟预筛",
     )
-    workflow_strip(3)
+    workflow_strip(4)
     if not st.session_state.criteria:
         st.warning("请先完成标准解析。")
         return
@@ -867,9 +1169,9 @@ def page_analysis() -> None:
     page_header(
         "招募可行性评估",
         "识别候选人群的主要筛减环节、数据缺口和代表性变化，并比较不同参数情景。",
-        "04 · 招募评估",
+        "05 · 招募评估",
     )
-    workflow_strip(4)
+    workflow_strip(5)
     ensure_results()
     if not st.session_state.results:
         st.warning("请先运行患者预筛。")
@@ -1061,12 +1363,122 @@ def page_analysis() -> None:
     )
 
 
+def page_validation() -> None:
+    page_header(
+        "验证证据与适用边界",
+        "把已经完成的工程验证、正在采集的业务证据和不能外推的结论分开呈现。",
+        "复赛证据",
+    )
+    criteria = st.session_state.criteria
+    traceable = sum(bool(item.source_text and item.source_reference) for item in criteria)
+    columns = st.columns(4)
+    metrics = [
+        ("审核标准", f"{len(criteria)} 条", "GOLDEN-4 人工校核版本"),
+        ("边界案例", "50 例", "含等值、缺失、时间窗和多重失败"),
+        ("自动化测试", "45 项", "本地与 GitHub Actions 使用同一套测试"),
+        ("来源追溯", f"{traceable}/{len(criteria)}", "标准原文与公开来源均保留"),
+    ]
+    for column, (label, value, note) in zip(columns, metrics):
+        with column:
+            insight_card(label, value, note)
+
+    section_title("证据状态")
+    evidence_rows = [
+        {
+            "验证项目": "规则引擎边界案例",
+            "状态": "已完成",
+            "当前证据": "50 例人工设定预期结果",
+            "能支持的结论": "受支持运算符和判定优先级可重复执行",
+        },
+        {
+            "验证项目": "离线完整演示路径",
+            "状态": "已完成",
+            "当前证据": "无 API Key 时仍可载入、审核、预筛和分析",
+            "能支持的结论": "评审现场不依赖外部模型服务",
+        },
+        {
+            "验证项目": "标准来源追溯",
+            "状态": "已完成",
+            "当前证据": f"{traceable}/{len(criteria)} 条保留原文和来源",
+            "能支持的结论": "每条计算结果可以回到方案依据",
+        },
+        {
+            "验证项目": "多方案结构化准确性",
+            "状态": "待采集",
+            "当前证据": "计划使用公开呼吸系统试验建立金标准",
+            "能支持的结论": "完成后报告字段级准确率与错误类型",
+        },
+        {
+            "验证项目": "医学人员效率对照",
+            "状态": "待采集",
+            "当前证据": "计划比较人工录入与工具辅助审核耗时",
+            "能支持的结论": "完成后只报告实测时间与遗漏数",
+        },
+        {
+            "验证项目": "飞书协作回读",
+            "状态": "待配置" if not feishu_settings().configured else "可验证",
+            "当前证据": "同步不会覆盖审核字段，读取后需人工确认差异",
+            "能支持的结论": "审核意见进入规则前有明确控制点",
+        },
+    ]
+    st.dataframe(
+        pd.DataFrame(evidence_rows),
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "验证项目": st.column_config.TextColumn(width="medium"),
+            "状态": st.column_config.TextColumn(width="small"),
+            "当前证据": st.column_config.TextColumn(width="large"),
+            "能支持的结论": st.column_config.TextColumn(width="large"),
+        },
+    )
+    st.info("多方案准确性和效率对照尚未完成，因此当前页面不展示推测性的提效百分比。")
+
+    section_title("效率验证记录模板")
+    st.caption("建议由医学专业同学分别完成纯人工和工具辅助任务，记录真实耗时、遗漏和修改数量。")
+    validation_template = pd.DataFrame(
+        columns=[
+            "参与者编号",
+            "专业背景",
+            "公开试验编号",
+            "处理方式",
+            "开始时间",
+            "结束时间",
+            "总耗时_分钟",
+            "标准总数",
+            "遗漏数",
+            "人工修改字段数",
+            "备注",
+        ]
+    )
+    st.download_button(
+        "下载效率验证记录模板 CSV",
+        data=validation_template.to_csv(index=False).encode("utf-8-sig"),
+        file_name="trialscope_validation_log.csv",
+        mime="text/csv",
+    )
+
+    section_title("不能从当前结果推出什么")
+    boundary_columns = st.columns(3)
+    boundaries = [
+        ("不代表真实入组率", "500 名候选者为合成数据，只用于验证计算和展示流程。"),
+        ("不自动修改方案", "情景比较用于讨论权衡，任何变更仍需医学、统计和伦理审核。"),
+        ("不处理真实患者决策", "原型不诊断、不自动入组，也不替代研究者判断。"),
+    ]
+    for column, (title, note) in zip(boundary_columns, boundaries):
+        with column:
+            st.markdown(
+                f"<div class='ts-boundary-card'><b>{escape(title)}</b><p>{escape(note)}</p></div>",
+                unsafe_allow_html=True,
+            )
+
+
 def sidebar() -> str:
     with st.sidebar:
         st.markdown(
             "<div class='ts-brand'><div class='ts-brand-mark'>TS</div><div>"
             "<div class='ts-brand-name'>TrialScope</div>"
-            "<div class='ts-brand-subtitle'>临床试验招募可行性评估</div></div></div>",
+            "<div class='ts-brand-subtitle'>招募可行性与协同审核</div></div></div>",
             unsafe_allow_html=True,
         )
         st.markdown("<div class='ts-nav-label'>工作流程</div>", unsafe_allow_html=True)
@@ -1074,8 +1486,9 @@ def sidebar() -> str:
             ("项目说明", "项目概览"),
             ("试验 / PDF 导入", "01  方案导入"),
             ("标准解析", "02  标准审核"),
-            ("患者预筛", "03  模拟预筛"),
-            ("招募分析", "04  招募评估"),
+            ("协作审核", "03  协作确认"),
+            ("患者预筛", "04  模拟预筛"),
+            ("招募分析", "05  招募评估"),
         ]
         page = st.session_state.navigation
         for index, (page_name, label) in enumerate(nav_items):
@@ -1089,9 +1502,19 @@ def sidebar() -> str:
                     args=(page_name,),
                 )
         st.markdown(
-            "<div class='ts-sidebar-help'>每一步都是可点击的操作入口；建议按 01–04 顺序完成。</div>",
+            "<div class='ts-sidebar-help'>建议按 01–05 完成。飞书未连接时可跳过协作步骤，不影响离线演示。</div>",
             unsafe_allow_html=True,
         )
+        st.markdown("<div class='ts-nav-label ts-nav-label-secondary'>复赛材料</div>", unsafe_allow_html=True)
+        validation_state = "active" if page == "验证证据" else "idle"
+        with st.container(key=f"sidebar_validation_{validation_state}"):
+            st.button(
+                "验证证据与边界",
+                key="sidebar_validation_button",
+                use_container_width=True,
+                on_click=go_to,
+                args=("验证证据",),
+            )
         source: TrialSource = st.session_state.source
         st.markdown(
             f"<div class='ts-sidebar-study'><div class='ts-nav-label'>当前研究</div>"
@@ -1115,7 +1538,11 @@ elif current_page == "试验 / PDF 导入":
     page_import()
 elif current_page == "标准解析":
     page_parse()
+elif current_page == "协作审核":
+    page_collaboration()
 elif current_page == "患者预筛":
     page_screening()
-else:
+elif current_page == "招募分析":
     page_analysis()
+else:
+    page_validation()
