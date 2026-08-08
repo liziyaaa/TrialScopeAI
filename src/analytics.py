@@ -135,18 +135,190 @@ def scenario_comparison(
     return pd.DataFrame(rows), baseline, scenario
 
 
+def _cohort_profile(
+    patients: pd.DataFrame,
+    results: Sequence[MatchResult],
+    *,
+    statuses: set[str] | None = None,
+) -> dict[str, float]:
+    """Return a compact demographic profile for a selected simulated cohort."""
+
+    selected_statuses = statuses or {"eligible"}
+    result_frame = results_dataframe(results)
+    merged = patients.merge(result_frame[["patient_id", "overall_status"]], on="patient_id")
+    selected = merged[merged["overall_status"].isin(selected_statuses)]
+    if selected.empty:
+        return {
+            "mean_age": 0.0,
+            "female_pct": 0.0,
+            "older_pct": 0.0,
+            "severe_pct": 0.0,
+        }
+    return {
+        "mean_age": round(float(selected["age"].mean()), 2),
+        "female_pct": round(float((selected["sex"] == "Female").mean() * 100), 2),
+        "older_pct": round(float((selected["age"] >= 65).mean() * 100), 2),
+        "severe_pct": round(
+            float((selected["disease_severity"] == "severe").mean() * 100), 2
+        ),
+    }
+
+
+def _representation_gap(patients: pd.DataFrame, results: Sequence[MatchResult]) -> float:
+    """Average absolute percentage-point gap from the full synthetic cohort."""
+
+    all_results = [
+        MatchResult(patient_id=str(row.patient_id), overall_status="eligible", evidences=[])
+        for row in patients.itertuples()
+    ]
+    population = _cohort_profile(patients, all_results)
+    selected = _cohort_profile(patients, results)
+    dimensions = ["female_pct", "older_pct", "severe_pct"]
+    return round(
+        sum(abs(selected[item] - population[item]) for item in dimensions) / len(dimensions),
+        2,
+    )
+
+
+def criterion_marginal_impact(
+    patients: pd.DataFrame,
+    criteria: Sequence[Criterion],
+) -> pd.DataFrame:
+    """Estimate each executable criterion's marginal effect by omitting it once.
+
+    This is a counterfactual simulation for protocol discussion, not a recommendation
+    to remove or relax a clinical criterion.
+    """
+
+    baseline = match_dataframe(patients, criteria)
+    baseline_counts = Counter(item.overall_status for item in baseline)
+    baseline_profile = _cohort_profile(patients, baseline)
+    rows: list[dict[str, Any]] = []
+    for criterion in criteria:
+        if criterion.execution_status != "automated":
+            continue
+        reduced = [item for item in criteria if item.criterion_id != criterion.criterion_id]
+        simulated = match_dataframe(patients, reduced)
+        counts = Counter(item.overall_status for item in simulated)
+        profile = _cohort_profile(patients, simulated)
+        rows.append(
+            {
+                "criterion_id": criterion.criterion_id,
+                "kind": criterion.kind,
+                "field": criterion.field or "",
+                "criterion": criterion.source_text,
+                "eligible_baseline": baseline_counts.get("eligible", 0),
+                "eligible_without": counts.get("eligible", 0),
+                "eligible_change": counts.get("eligible", 0)
+                - baseline_counts.get("eligible", 0),
+                "potential_change": (
+                    counts.get("eligible", 0) + counts.get("needs_review", 0)
+                )
+                - (
+                    baseline_counts.get("eligible", 0)
+                    + baseline_counts.get("needs_review", 0)
+                ),
+                "missing_change": counts.get("missing_data", 0)
+                - baseline_counts.get("missing_data", 0),
+                "mean_age_change": round(
+                    profile["mean_age"] - baseline_profile["mean_age"], 2
+                ),
+                "female_pct_change": round(
+                    profile["female_pct"] - baseline_profile["female_pct"], 2
+                ),
+                "older_pct_change": round(
+                    profile["older_pct"] - baseline_profile["older_pct"], 2
+                ),
+                "severe_pct_change": round(
+                    profile["severe_pct"] - baseline_profile["severe_pct"], 2
+                ),
+            }
+        )
+    return pd.DataFrame(rows).sort_values(
+        ["eligible_change", "potential_change"], ascending=False
+    ).reset_index(drop=True)
+
+
+def scenario_tradeoff(
+    patients: pd.DataFrame,
+    baseline_results: Sequence[MatchResult],
+    scenario_results: Sequence[MatchResult],
+) -> pd.DataFrame:
+    """Compare scale, representation and information burden across two scenarios."""
+
+    baseline_counts = Counter(item.overall_status for item in baseline_results)
+    scenario_counts = Counter(item.overall_status for item in scenario_results)
+    rows = [
+        {
+            "metric": "eligible_count",
+            "baseline": baseline_counts.get("eligible", 0),
+            "scenario": scenario_counts.get("eligible", 0),
+        },
+        {
+            "metric": "potential_count",
+            "baseline": baseline_counts.get("eligible", 0)
+            + baseline_counts.get("needs_review", 0),
+            "scenario": scenario_counts.get("eligible", 0)
+            + scenario_counts.get("needs_review", 0),
+        },
+        {
+            "metric": "representation_gap",
+            "baseline": _representation_gap(patients, baseline_results),
+            "scenario": _representation_gap(patients, scenario_results),
+        },
+        {
+            "metric": "missing_data_count",
+            "baseline": baseline_counts.get("missing_data", 0),
+            "scenario": scenario_counts.get("missing_data", 0),
+        },
+        {
+            "metric": "review_count",
+            "baseline": baseline_counts.get("needs_review", 0),
+            "scenario": scenario_counts.get("needs_review", 0),
+        },
+    ]
+    frame = pd.DataFrame(rows)
+    frame["change"] = frame["scenario"] - frame["baseline"]
+    return frame
+
+
 def build_markdown_report(
     source_title: str,
     patients: pd.DataFrame,
     results: Sequence[MatchResult],
     criteria: Sequence[Criterion],
+    *,
+    language: str = "zh",
 ) -> str:
     counts = Counter(result.overall_status for result in results)
     blockers = blocker_counts(results, criteria).head(5)
     blocker_lines = "\n".join(
-        f"- {row.criterion_id}: {row['count']} 人 - {row.criterion}"
+        f"- {row.criterion_id}: {row['count']} {'records' if language == 'en' else '人'} - {row.criterion}"
         for _, row in blockers.iterrows()
-    ) or "- 暂无明确排除原因"
+    ) or ("- No dominant failed constraint" if language == "en" else "- 暂无明确排除原因")
+    if language == "en":
+        return f"""# TrialScopeAI protocol decision brief
+
+## Reference study
+
+{source_title}
+
+## Synthetic cohort baseline
+
+- Synthetic records: {len(patients)}
+- Rule-eligible: {counts.get('eligible', 0)}
+- Constraint not met: {counts.get('ineligible', 0)}
+- Data unresolved: {counts.get('missing_data', 0)}
+- Clinical review: {counts.get('needs_review', 0)}
+
+## Leading failed constraints
+
+{blocker_lines}
+
+## Decision boundary
+
+This brief uses public protocol criteria and synthetic records to validate a traceable decision workflow. It does not diagnose, enrol participants or recommend a protocol amendment. Medical, statistical, investigator and ethics review remain required for real decisions.
+"""
     return f"""# TrialScopeAI 招募可行性模拟摘要
 
 ## 试验
