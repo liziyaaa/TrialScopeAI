@@ -10,6 +10,7 @@ import json
 import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
+from urllib.parse import urlparse
 
 import httpx
 
@@ -123,6 +124,16 @@ def _json_value(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def feishu_url_value(link: str, text: str | None = None) -> dict[str, str] | None:
+    """Return Feishu's URL-cell shape, or None for non-web references."""
+
+    normalized = str(link or "").strip()
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return {"link": normalized, "text": (text or normalized).strip() or normalized}
+
+
 def criterion_to_feishu_fields(
     trial_id: str,
     criterion: Criterion,
@@ -136,7 +147,7 @@ def criterion_to_feishu_fields(
         if criterion.time_window_days is not None
         else ""
     )
-    return {
+    fields: dict[str, Any] = {
         "同步键": f"{trial_id}:{criterion.criterion_id}",
         "试验编号": trial_id,
         "标准编号": criterion.criterion_id,
@@ -151,8 +162,11 @@ def criterion_to_feishu_fields(
         "执行方式": EXECUTION_TO_FEISHU[str(criterion.execution_status)],
         "置信度": float(criterion.confidence),
         "版本": int(version),
-        "来源链接": criterion.source_reference,
     }
+    source_link = feishu_url_value(criterion.source_reference, trial_id)
+    if source_link is not None:
+        fields["来源链接"] = source_link
+    return fields
 
 
 def _record_fields(record: dict[str, Any]) -> dict[str, Any]:

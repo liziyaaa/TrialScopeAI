@@ -9,6 +9,7 @@ from src.feishu import (
     FeishuSettings,
     apply_reviewed_records,
     criterion_to_feishu_fields,
+    feishu_url_value,
 )
 from src.models import Criterion
 
@@ -37,7 +38,23 @@ def test_criterion_mapping_keeps_traceability():
     assert fields["类型"] == "入组"
     assert fields["运算符"] == "小于"
     assert fields["阈值"] == "0.7"
-    assert fields["来源链接"].endswith("NCT02347774")
+    assert fields["来源链接"] == {
+        "link": "https://clinicaltrials.gov/study/NCT02347774",
+        "text": "NCT02347774",
+    }
+
+
+def test_feishu_url_value_rejects_non_web_references():
+    assert feishu_url_value("uploaded-pdf:protocol.pdf") is None
+    assert feishu_url_value("user-provided-text") is None
+
+
+def test_non_web_source_is_omitted_from_url_field():
+    criterion = _criterion().model_copy(
+        update={"source_reference": "uploaded-pdf:protocol.pdf"}
+    )
+    fields = criterion_to_feishu_fields("protocol.pdf", criterion)
+    assert "来源链接" not in fields
 
 
 def test_reviewed_record_builds_diff_without_mutating_original():
@@ -108,6 +125,10 @@ def test_sync_creates_and_updates_while_preserving_review_fields():
     update_fields = update_call[2]["records"][0]["fields"]
     assert "审核状态" not in update_fields
     assert "修改意见" not in update_fields
+    assert update_fields["来源链接"] == {
+        "link": "https://clinicaltrials.gov/study/NCT02347774",
+        "text": "NCT02347774",
+    }
 
 
 def test_upsert_record_creates_aggregate_in_target_table():
