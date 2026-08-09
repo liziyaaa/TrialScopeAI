@@ -644,6 +644,10 @@ def go_to(page: str) -> None:
     st.session_state.navigation = page
 
 
+def set_language(language: str) -> None:
+    st.session_state.language = language
+
+
 SCENARIO_PRESETS = {
     "baseline": {
         "scenario_age_min": 40,
@@ -799,10 +803,10 @@ def page_home() -> None:
                 hole=0.64,
                 color="status",
                 color_discrete_map={
-                    "eligible": "#20744A",
-                    "ineligible": "#71808C",
-                    "missing_data": "#D28B25",
-                    "needs_review": "#2878B8",
+                    "eligible": "#2F7A73",
+                    "ineligible": "#7A8995",
+                    "missing_data": "#B78232",
+                    "needs_review": "#3F78A2",
                 },
             )
             status_fig.update_traces(textposition="outside", textinfo="percent+label", sort=False)
@@ -818,7 +822,7 @@ def page_home() -> None:
         with st.container(border=True, key="dashboard_funnel_panel"):
             st.markdown(f"<div class='ts-panel-title'>{escape(tr('候选队列约束路径', 'Constraint path'))}</div>", unsafe_allow_html=True)
             funnel_fig = px.funnel(funnel, x="count", y="stage", text="count")
-            funnel_fig.update_traces(marker_color="#2A6F97", textfont_color="#FFFFFF")
+            funnel_fig.update_traces(marker_color="#326F98", textfont_color="#F4F8FB")
             st.plotly_chart(style_figure(funnel_fig, height=330), width="stretch", config={"displayModeBar": False})
 
     blockers = blocker_counts(results, criteria)
@@ -842,7 +846,7 @@ def page_home() -> None:
                     orientation="h",
                     text="count",
                 )
-                blocker_fig.update_traces(marker_color="#2A6F97", textposition="outside", cliponaxis=False)
+                blocker_fig.update_traces(marker_color="#326F98", textposition="outside", cliponaxis=False)
                 st.plotly_chart(style_figure(blocker_fig, height=350), width="stretch", config={"displayModeBar": False})
     with chart_right:
         with st.container(border=True, key="dashboard_representation_panel"):
@@ -866,7 +870,7 @@ def page_home() -> None:
                 color="group",
                 barmode="group",
                 text_auto=".1f",
-                color_discrete_sequence=["#A7B4BE", "#2D7773"],
+                color_discrete_sequence=["#A7B5C0", "#2F7A73"],
             )
             composition_fig.update_yaxes(ticksuffix="%")
             st.plotly_chart(style_figure(composition_fig, height=350), width="stretch", config={"displayModeBar": False})
@@ -1557,7 +1561,7 @@ def page_analysis() -> None:
                     "模拟符合或待复核": "Rule-eligible or clinical review",
                 })
             fig = px.funnel(funnel, x="count", y="stage")
-            fig.update_traces(marker_color="#2D7773", textfont_color="#FFFFFF")
+            fig.update_traces(marker_color="#2F7A73", textfont_color="#F4F8FB")
             st.plotly_chart(
                 style_figure(fig, height=390),
                 width="stretch",
@@ -1583,7 +1587,7 @@ def page_analysis() -> None:
                     orientation="h",
                     hover_data={"criterion": True, "label": False},
                 )
-                fig.update_traces(marker_color="#B84A45")
+                fig.update_traces(marker_color="#B75B55")
                 st.plotly_chart(
                     style_figure(fig, height=390),
                     width="stretch",
@@ -1609,7 +1613,7 @@ def page_analysis() -> None:
             y="value",
             color="group",
             barmode="group",
-            color_discrete_sequence=["#9BAAB4", "#2D7773"],
+            color_discrete_sequence=["#A7B5C0", "#2F7A73"],
             labels={"metric": tr("指标", "Measure"), "value": tr("数值", "Value"), "group": tr("人群", "Cohort")},
         )
         st.plotly_chart(
@@ -1633,7 +1637,7 @@ def page_analysis() -> None:
                 y="label",
                 orientation="h",
             )
-            fig.update_traces(marker_color="#A66B16")
+            fig.update_traces(marker_color="#B78232")
             st.plotly_chart(
                 style_figure(fig, height=360),
                 width="stretch",
@@ -1669,7 +1673,7 @@ def page_analysis() -> None:
                 orientation="h",
                 labels={"eligible_change": tr("基线候选规模变化", "Change in candidate scale")},
             )
-            fig.update_traces(marker_color="#2D7773")
+            fig.update_traces(marker_color="#2F7A73")
             st.plotly_chart(style_figure(fig, height=390), width="stretch", config={"displayModeBar": False})
         with marginal_right:
             insight_card(
@@ -1841,7 +1845,7 @@ def page_analysis() -> None:
             y=[baseline_label, scenario_label],
             barmode="group",
             labels={"label": tr("结果", "Cohort state"), "value": tr("人数", "Records"), "variable": tr("方案", "Run")},
-            color_discrete_sequence=["#9BAAB4", "#2D7773"],
+            color_discrete_sequence=["#A7B5C0", "#2F7A73"],
         )
         st.plotly_chart(
             style_figure(fig, height=350),
@@ -2177,14 +2181,19 @@ def top_navigation() -> str:
             unsafe_allow_html=True,
         )
         with language_col:
-            st.radio(
-                "Language / 语言",
-                options=["zh", "en"],
-                format_func=lambda item: "中文" if item == "zh" else "EN",
-                horizontal=True,
-                key="language",
-                label_visibility="collapsed",
-            )
+            with st.container(key="language_switch"):
+                language_columns = st.columns(2, gap="small")
+                for index, (language, label) in enumerate([("zh", "中文"), ("en", "EN")]):
+                    state = "active" if current_language() == language else "idle"
+                    with language_columns[index]:
+                        with st.container(key=f"language_option_{language}_{state}"):
+                            st.button(
+                                label,
+                                key=f"language_button_{language}",
+                                use_container_width=True,
+                                on_click=set_language,
+                                args=(language,),
+                            )
 
     nav_items = [
         ("项目说明", tr("总览", "Overview")),

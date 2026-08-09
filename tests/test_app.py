@@ -80,7 +80,7 @@ def test_english_interface_uses_adapted_decision_language():
 def test_global_navigation_is_top_level_and_sidebar_is_removed():
     app = AppTest.from_file("app.py", default_timeout=40).run()
     labels = [item.label for item in app.button]
-    assert labels[:7] == [
+    expected_navigation = [
         "总览",
         "方案导入",
         "标准审核",
@@ -89,7 +89,17 @@ def test_global_navigation_is_top_level_and_sidebar_is_removed():
         "情景分析",
         "质量控制",
     ]
+    assert all(label in labels for label in expected_navigation)
+    assert labels.index("总览") < labels.index("质量控制")
+    assert "中文" in labels and "EN" in labels
     assert not app.sidebar.button
+
+
+def test_language_switch_uses_explicit_buttons():
+    app = AppTest.from_file("app.py", default_timeout=40).run()
+    next(item for item in app.button if item.label == "EN").click().run(timeout=40)
+    assert app.session_state["language"] == "en"
+    assert any("Recruitment feasibility overview" in item.value for item in app.markdown)
 
 
 def test_english_decision_page_renders_tradeoff_controls():
