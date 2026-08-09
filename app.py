@@ -60,10 +60,10 @@ from src.trial_sources import (
 
 
 st.set_page_config(
-    page_title="TrialScope | Protocol Decision Sandbox",
+    page_title="TrialScope | Clinical Feasibility Workspace",
     page_icon="T",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 APP_CSS = (Path(__file__).parent / "assets" / "styles.css").read_text(encoding="utf-8")
@@ -111,7 +111,7 @@ def init_state() -> None:
     defaults = {
         "language": "zh",
         "navigation": "项目说明",
-        "import_method": "内置演示",
+        "import_method": "预置研究",
         "selected_patient_id": None,
         "source": demo_source,
         "criteria_text": demo_source.criteria_text,
@@ -126,11 +126,13 @@ def init_state() -> None:
         "feishu_pending_criteria": None,
         "feishu_review_diffs": [],
         "feishu_sync_note": "",
-        "last_parse_note": "已载入医学审核的 GOLDEN-4 缓存标准。",
+        "last_parse_note": "已载入 GOLDEN-4 结构化标准。",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+    if st.session_state.get("import_method") == "内置演示":
+        st.session_state.import_method = "预置研究"
 
 
 def set_source(source: TrialSource, criteria_text: str | None = None) -> None:
@@ -725,162 +727,174 @@ def task_row(
 
 
 def page_home() -> None:
-    if current_language() == "en":
-        hero = {
-            "class": "lang-en",
-            "version": "ROUND 40 · DECISION PROTOTYPE",
-            "title": "Stress-test protocol constraints<br>before recruitment begins",
-            "subtitle": (
-                "A traceable decision sandbox that turns eligibility text into reviewable rules, "
-                "then shows how each constraint changes candidate scale, data burden and cohort mix."
-            ),
-            "meta": ["Public protocol", "Deterministic execution", "Clinical sign-off"],
-            "demo": "REFERENCE STUDY",
-            "boundary": "DATA BOUNDARY",
-            "boundary_value": "No real patient records",
-        }
-    else:
-        hero = {
-            "class": "lang-zh",
-            "version": "40 强赛 · 决策原型",
-            "title": "临床试验方案约束仿真<br>与招募可行性协同决策平台",
-            "subtitle": (
-                "把入排标准变成可审核、可计算的方案约束，在不使用真实患者数据的前提下，"
-                "提前看清候选规模、数据负担和人群构成的连锁变化。"
-            ),
-            "meta": ["公开试验方案", "确定性规则执行", "医学人员最终确认"],
-            "demo": "当前参考案例",
-            "boundary": "数据边界",
-            "boundary_value": "0 条真实患者记录",
-        }
-    meta_html = "".join(f"<span>{escape(item)}</span>" for item in hero["meta"])
+    ensure_results()
+    results = st.session_state.results or []
+    patients = st.session_state.patients
+    criteria = st.session_state.criteria
+    counts = Counter(item.overall_status for item in results)
+    potential = counts.get("eligible", 0) + counts.get("needs_review", 0)
+    unresolved = counts.get("missing_data", 0) + counts.get("needs_review", 0)
+    eligible_rate = counts.get("eligible", 0) / len(results) * 100 if results else 0
+
     st.markdown(
         f"""
-        <div class="ts-hero {hero['class']}">
-            <div class="ts-hero-copy">
-                <div class="ts-version">{hero['version']}</div>
-                <h1>{hero['title']}</h1>
-                <p>{hero['subtitle']}</p>
-                <div class="ts-hero-meta">{meta_html}</div>
+        <div class="ts-dashboard-heading">
+            <div>
+                <div class="ts-kicker">{escape(tr('临床开发工作台', 'CLINICAL DEVELOPMENT WORKSPACE'))}</div>
+                <h1>{escape(tr('招募可行性总览', 'Recruitment feasibility overview'))}</h1>
+                <p>{escape(tr('集中查看方案约束、候选规模、信息负担与人群构成。', 'Monitor protocol constraints, candidate scale, information burden and cohort composition.'))}</p>
             </div>
-            <div class="ts-hero-aside">
-                <div class="ts-hero-aside-label">{hero['demo']}</div>
-                <div class="ts-hero-aside-value">GOLDEN-4</div>
-                <div class="ts-hero-aside-note">NCT02347774 · Phase III COPD</div>
-                <div class="ts-hero-aside-line"></div>
-                <div class="ts-hero-aside-label">{hero['boundary']}</div>
-                <div class="ts-hero-aside-value">{hero['boundary_value']}</div>
-            </div>
+            <span class="ts-system-state">{escape(tr('规则集已就绪', 'RULE SET READY'))}</span>
         </div>
         """,
         unsafe_allow_html=True,
     )
     source_summary()
-    ensure_results()
-    results = st.session_state.results or []
-    counts = Counter(item.overall_status for item in results)
-    cols = st.columns(4)
+
+    cols = st.columns(5)
     metrics = [
-        (tr("方案约束", "Protocol constraints"), str(len(st.session_state.criteria)), tr("均保留方案原文", "Every rule links back to source text")),
-        (tr("合成候选队列", "Synthetic cohort"), str(len(st.session_state.patients)), tr("固定随机种子，可复现", "Fixed seed; fully reproducible")),
-        (tr("基线候选规模", "Baseline candidate scale"), str(counts.get("eligible", 0)), tr("仅计可执行规则全部通过者", "Strict rule-eligible count")),
-        (tr("待补充或复核", "Unresolved cases"), str(counts.get("missing_data", 0) + counts.get("needs_review", 0)), tr("不静默排除", "Never silently excluded")),
+        (tr("方案约束", "Protocol constraints"), str(len(criteria)), tr("已结构化", "Structured")),
+        (tr("评估队列", "Evaluated cohort"), str(len(patients)), tr("合成记录", "Synthetic records")),
+        (tr("规则符合", "Rule-eligible"), str(counts.get("eligible", 0)), f"{eligible_rate:.1f}%"),
+        (tr("潜在候选", "Potential candidates"), str(potential), tr("含待医学复核", "Includes clinical review")),
+        (tr("待处理", "Open workload"), str(unresolved), tr("信息补充或复核", "Data or review needed")),
     ]
     for column, (label, value, help_text) in zip(cols, metrics):
         column.metric(label, value, help=help_text)
 
-    section_title(tr("完成一次可追溯的方案评估", "A traceable protocol decision path"))
-    st.caption(tr(
-        "五个步骤分别对应方案、医学、协作、仿真和决策；预筛只是底层计算，不是最终产品。",
-        "The workflow separates protocol interpretation, clinical review, team sign-off, simulation and decision evidence.",
-    ))
-    settings = feishu_settings()
-    collaboration_ready = bool_setting("ENABLE_FEISHU_SYNC", False) and settings.configured
-    task_row("01", tr("导入试验方案", "Bring in the protocol"), tr("确认 NCT、文本或 PDF 中的方案原文", "Use an NCT record, pasted text or a searchable PDF"), tr("已载入", "Loaded"), "试验 / PDF 导入", tr("查看", "Review"))
-    task_row("02", tr("审核方案约束", "Review executable constraints"), tr("核对字段、阈值、时间窗及需要人工判断的条件", "Validate thresholds, windows and judgement-only criteria"), tr("可审核", "Ready"), "标准解析", tr("打开", "Open"))
-    task_row(
-        "03",
-        tr("完成跨角色确认", "Collect cross-functional sign-off"),
-        tr("同步至飞书，保留审核人、意见和版本记录", "Use Feishu for reviewers, comments and version history"),
-        tr("已连接", "Connected") if collaboration_ready else tr("待连接", "Optional"),
-        "协作审核",
-        tr("进入审核", "Review"),
-        active=True,
+    dashboard_status_labels = {
+        "eligible": tr("规则符合", "Rule-eligible"),
+        "ineligible": tr("未满足约束", "Constraint not met"),
+        "missing_data": tr("信息待补", "Data unresolved"),
+        "needs_review": tr("医学复核", "Clinical review"),
+    }
+    status_frame = pd.DataFrame(
+        [
+            {"status": status, "label": dashboard_status_labels[status], "count": counts.get(status, 0)}
+            for status in ["eligible", "ineligible", "missing_data", "needs_review"]
+        ]
     )
-    task_row("04", tr("运行方案约束仿真", "Run the cohort laboratory"), tr("在固定合成队列中执行已确认规则并保留证据", "Execute signed-off rules against a fixed synthetic cohort"), tr("可运行", "Ready"), "患者预筛", tr("打开", "Run"))
-    task_row("05", tr("比较决策权衡", "Compare decision trade-offs"), tr("查看边际影响、数据负担、代表性和情景变化", "Inspect marginal impact, data burden and cohort shift"), tr("可查看", "Ready"), "招募分析", tr("打开", "Explore"))
+    funnel = build_funnel(patients, criteria)
+    funnel["stage"] = funnel["stage"].replace({"模拟符合或待复核": "规则符合或待复核"})
+    if current_language() == "en":
+        funnel["stage"] = funnel["stage"].replace({
+            "候选队列": "Evaluated cohort",
+            "年龄与诊断": "Age and diagnosis",
+            "吸烟史": "Smoking exposure",
+            "肺功能": "Pulmonary function",
+            "近期事件": "Recent events",
+            "其他可执行排除项": "Other exclusions",
+            "规则符合或待复核": "Eligible or review",
+        })
 
-    section_title(tr("这次评估回答三个决策问题", "Three questions for protocol teams"))
-    objective_columns = st.columns(3)
-    objectives = [
-        ("01", tr("方案能否被一致执行", "Can sites execute it consistently?"), tr("区分可计算约束与必须保留的医学判断。", "Separate executable constraints from clinical judgement.")),
-        ("02", tr("哪项条件真正限制招募", "Which constraint actually limits scale?"), tr("用反事实计算识别每项标准的边际影响。", "Estimate each rule's marginal effect with counterfactual runs.")),
-        ("03", tr("调整后会牺牲什么", "What changes with each scenario?"), tr("同时观察候选规模、数据负担和人群构成。", "Read candidate scale, data burden and cohort mix together.")),
-    ]
-    for column, (number, title, note) in zip(objective_columns, objectives):
-        with column:
-            st.markdown(
-                f"<div class='ts-objective'><div class='ts-objective-number'>{number}</div>"
-                f"<div class='ts-objective-title'>{escape(title)}</div>"
-                f"<div class='ts-objective-note'>{escape(note)}</div></div>",
-                unsafe_allow_html=True,
+    section_title(tr("队列运行概况", "Cohort operations"))
+    chart_left, chart_right = st.columns([0.82, 1.18], gap="medium")
+    with chart_left:
+        with st.container(border=True, key="dashboard_status_panel"):
+            st.markdown(f"<div class='ts-panel-title'>{escape(tr('队列状态分布', 'Cohort status'))}</div>", unsafe_allow_html=True)
+            status_fig = px.pie(
+                status_frame,
+                names="label",
+                values="count",
+                hole=0.64,
+                color="status",
+                color_discrete_map={
+                    "eligible": "#20744A",
+                    "ineligible": "#71808C",
+                    "missing_data": "#D28B25",
+                    "needs_review": "#2878B8",
+                },
             )
+            status_fig.update_traces(textposition="outside", textinfo="percent+label", sort=False)
+            status_fig.add_annotation(
+                text=f"<b>{counts.get('eligible', 0)}</b><br>{escape(tr('规则符合', 'eligible'))}",
+                x=0.5,
+                y=0.5,
+                showarrow=False,
+                font=dict(size=15, color="#1B2733"),
+            )
+            st.plotly_chart(style_figure(status_fig, height=330), width="stretch", config={"displayModeBar": False})
+    with chart_right:
+        with st.container(border=True, key="dashboard_funnel_panel"):
+            st.markdown(f"<div class='ts-panel-title'>{escape(tr('候选队列约束路径', 'Constraint path'))}</div>", unsafe_allow_html=True)
+            funnel_fig = px.funnel(funnel, x="count", y="stage", text="count")
+            funnel_fig.update_traces(marker_color="#2A6F97", textfont_color="#FFFFFF")
+            st.plotly_chart(style_figure(funnel_fig, height=330), width="stretch", config={"displayModeBar": False})
 
-    validation_col, boundary_col = st.columns(2, gap="large")
-    with validation_col:
-        section_title(tr("当前验证", "Evidence available now"))
-        st.markdown(
-            "<div class='ts-proof-list'>"
-            f"<div><b>27</b><span>{escape(tr('人工审核的 GOLDEN-4 方案约束', 'Clinically reviewed GOLDEN-4 constraints'))}</span></div>"
-            f"<div><b>50</b><span>{escape(tr('阈值、缺失、时间窗与主观判断边界案例', 'Boundary cases for thresholds, missingness and time windows'))}</span></div>"
-            f"<div><b>54</b><span>{escape(tr('自动化测试与离线完整演示路径', 'Automated checks and an offline demo path'))}</span></div>"
-            "</div>",
-            unsafe_allow_html=True,
-        )
-        st.button(
-            tr("查看验证证据", "Open evidence register"),
-            use_container_width=True,
-            on_click=go_to,
-            args=("验证证据",),
-        )
-    with boundary_col:
-        section_title(tr("数据使用范围", "Designed for safe evaluation"))
-        st.markdown(
-            "<div class='ts-proof-list'>"
-            f"<div><b>{escape(tr('公开', 'Public'))}</b><span>ClinicalTrials.gov protocol</span></div>"
-            f"<div><b>{escape(tr('合成', 'Synthetic'))}</b><span>{escape(tr('固定随机种子的候选队列', 'Fixed-seed candidate cohort'))}</span></div>"
-            f"<div><b>{escape(tr('人工确认', 'Human sign-off'))}</b><span>{escape(tr('医学判断不由模型自动决定', 'Clinical judgement stays with reviewers'))}</span></div>"
-            "</div>",
-            unsafe_allow_html=True,
+    blockers = blocker_counts(results, criteria)
+    criterion_map = {item.criterion_id: item for item in criteria}
+    chart_left, chart_right = st.columns([1.08, 0.92], gap="medium")
+    with chart_left:
+        with st.container(border=True, key="dashboard_blockers_panel"):
+            st.markdown(f"<div class='ts-panel-title'>{escape(tr('主要限制标准', 'Leading constraints'))}</div>", unsafe_allow_html=True)
+            top_blockers = blockers.head(7).copy()
+            if top_blockers.empty:
+                st.info(tr("当前没有明确的未通过标准。", "No failed constraint is currently recorded."))
+            else:
+                top_blockers["label"] = [
+                    f"{criterion_id} · {field_labels().get(criterion_map.get(criterion_id).field if criterion_map.get(criterion_id) else None, criterion_id)}"
+                    for criterion_id in top_blockers["criterion_id"]
+                ]
+                blocker_fig = px.bar(
+                    top_blockers.sort_values("count"),
+                    x="count",
+                    y="label",
+                    orientation="h",
+                    text="count",
+                )
+                blocker_fig.update_traces(marker_color="#2A6F97", textposition="outside", cliponaxis=False)
+                st.plotly_chart(style_figure(blocker_fig, height=350), width="stretch", config={"displayModeBar": False})
+    with chart_right:
+        with st.container(border=True, key="dashboard_representation_panel"):
+            st.markdown(f"<div class='ts-panel-title'>{escape(tr('人群构成对照', 'Cohort composition'))}</div>", unsafe_allow_html=True)
+            representation = representation_table(patients, results)
+            representation = representation[representation["metric"] != "平均年龄"].copy()
+            if current_language() == "en":
+                representation["group"] = representation["group"].replace({
+                    "候选队列": "Evaluated cohort",
+                    "模拟符合或待复核": "Eligible or review",
+                })
+                representation["metric"] = representation["metric"].replace({
+                    "女性占比": "Female",
+                    "65岁及以上占比": "Age 65+",
+                    "重度COPD占比": "Severe COPD",
+                })
+            composition_fig = px.bar(
+                representation,
+                x="metric",
+                y="value",
+                color="group",
+                barmode="group",
+                text_auto=".1f",
+                color_discrete_sequence=["#A7B4BE", "#2D7773"],
+            )
+            composition_fig.update_yaxes(ticksuffix="%")
+            st.plotly_chart(style_figure(composition_fig, height=350), width="stretch", config={"displayModeBar": False})
+
+    section_title(tr("关键标准明细", "Constraint register"))
+    if not blockers.empty:
+        detail = blockers.head(8).copy()
+        detail[tr("指标", "Field")] = [
+            field_labels().get(criterion_map.get(item).field if criterion_map.get(item) else None, item)
+            for item in detail["criterion_id"]
+        ]
+        detail = detail.rename(columns={
+            "criterion_id": tr("标准编号", "Constraint ID"),
+            "count": tr("未通过记录", "Failed records"),
+            "criterion": tr("方案原文", "Protocol statement"),
+        })
+        detail.insert(0, tr("排序", "Rank"), range(1, len(detail) + 1))
+        st.dataframe(
+            detail[[tr("排序", "Rank"), tr("标准编号", "Constraint ID"), tr("指标", "Field"), tr("未通过记录", "Failed records"), tr("方案原文", "Protocol statement")]],
+            width="stretch",
+            hide_index=True,
+            height=310,
         )
 
     st.markdown(
-        f"<div class='ts-boundary'><b>{escape(tr('使用边界：', 'Decision boundary:'))}</b>"
-        f"{escape(tr('本工具用于试验设计与招募可行性讨论，不诊断、不自动入组，也不替代研究者、统计人员或伦理委员会。', 'This prototype supports protocol discussion. It does not diagnose, enrol participants, or replace investigators, statisticians or ethics review.'))}</div>",
+        f"<div class='ts-system-footnote'>{escape(tr('数据范围：公开试验方案与合成候选队列。页面结果用于方案评估和协作审核，不用于诊断或自动入组。', 'Data scope: public protocol plus a synthetic cohort. Results support protocol assessment and review; they are not used for diagnosis or automatic enrolment.'))}</div>",
         unsafe_allow_html=True,
     )
-
-    section_title(tr("为什么这不是普通智能入排", "Beyond automated eligibility screening"))
-    comparison_columns = st.columns(2, gap="large")
-    comparison = [
-        (
-            tr("传统智能入排", "Conventional screening automation"),
-            tr("回答“某名患者是否符合”", "Answers whether one patient matches"),
-            tr("输出符合或不符合", "Returns a match decision"),
-        ),
-        (
-            "TrialScopeAI",
-            tr("回答“方案约束会带来什么后果”", "Tests what protocol constraints do to a cohort"),
-            tr("输出规模、数据负担与代表性权衡", "Surfaces scale, data burden and representation trade-offs"),
-        ),
-    ]
-    for column, (title, question, output) in zip(comparison_columns, comparison):
-        with column:
-            st.markdown(
-                f"<div class='ts-position-card'><div class='ts-position-title'>{escape(title)}</div>"
-                f"<p>{escape(question)}</p><span>{escape(output)}</span></div>",
-                unsafe_allow_html=True,
-            )
 
 
 def page_import() -> None:
@@ -892,14 +906,13 @@ def page_import() -> None:
         ),
         tr("01 · 方案导入", "01 · PROTOCOL SOURCE"),
     )
-    workflow_strip(1)
     section_title(tr("选择方案来源", "Choose one protocol source"))
     st.caption(tr(
         "每次只处理一种输入，确认原文后才进入结构化审核。",
         "Each run uses one source. Review the extracted text before moving into rule authoring.",
     ))
     source_options = [
-        ("内置演示", "GOLDEN-4", tr("无需准备文件，适合直接体验", "A reliable, no-setup reference case")),
+        ("预置研究", "GOLDEN-4", tr("预置公开研究，可直接建立工作区", "A prepared public study for immediate use")),
         ("NCT 编号", tr("公开试验", "NCT record"), tr("从 ClinicalTrials.gov 获取标准", "Fetch public eligibility text")),
         ("粘贴文本", tr("标准原文", "Paste text"), tr("适合已有 Word 或网页文本", "For copied protocol sections")),
         ("上传 PDF", tr("研究方案", "Searchable PDF"), tr("首版不处理扫描图像", "Text PDFs only; no OCR guessing")),
@@ -926,31 +939,31 @@ def page_import() -> None:
 
     method = st.session_state.import_method
     method_display = {
-        "内置演示": "GOLDEN-4 reference",
+        "预置研究": tr("预置公开研究", "Prepared public study"),
         "NCT 编号": "ClinicalTrials.gov",
-        "粘贴文本": "Pasted eligibility text",
-        "上传 PDF": "Searchable PDF",
-    }.get(method, method) if current_language() == "en" else method
+        "粘贴文本": tr("粘贴标准原文", "Pasted eligibility text"),
+        "上传 PDF": tr("文字型 PDF", "Searchable PDF"),
+    }.get(method, method)
     st.markdown(
         f"<div class='ts-selection-label'>{escape(tr('当前选择', 'Active source'))}: {escape(method_display)}</div>",
         unsafe_allow_html=True,
     )
     with st.container(border=True, key="source_input_panel"):
-        if method == "内置演示":
+        if method == "预置研究":
             left, right = st.columns([2, 1])
             with left:
                 st.markdown("**GOLDEN-4（NCT02347774）**")
                 st.caption(tr(
-                    "COPD Ⅲ期公开试验，覆盖年龄、吸烟史、肺功能、用药和时间窗，适合完整演示。",
+                    "COPD Ⅲ期公开试验，覆盖年龄、吸烟史、肺功能、用药和时间窗。",
                     "A public Phase III COPD study with numeric, medication and time-window constraints.",
                 ))
-                if st.button(tr("载入 GOLDEN-4 演示", "Load reference case"), type="primary", use_container_width=True):
+                if st.button(tr("载入 GOLDEN-4", "Load GOLDEN-4"), type="primary", use_container_width=True):
                     set_source(load_demo_source())
-                    st.success(tr("演示案例已载入。请在下方核对原文。", "Reference case loaded. Review the source text below."))
+                    st.success(tr("研究已载入，请在下方核对原文。", "Study loaded. Review the source text below."))
             with right:
                 pdf_path = OUTPUT_DIR / "pdf" / "golden4_demo_protocol.pdf"
                 st.download_button(
-                    tr("下载演示 PDF", "Download reference PDF"),
+                    tr("下载研究方案 PDF", "Download protocol PDF"),
                     data=pdf_path.read_bytes(),
                     file_name=pdf_path.name,
                     mime="application/pdf",
@@ -1053,7 +1066,6 @@ def page_parse() -> None:
         ),
         tr("02 · 标准审核", "02 · RULE REVIEW"),
     )
-    workflow_strip(2)
     source_summary()
     api_key = str(read_setting("DEEPSEEK_API_KEY", "") or "")
     model = str(read_setting("DEEPSEEK_MODEL", DEEPSEEK_DEFAULT_MODEL))
@@ -1099,14 +1111,14 @@ def page_parse() -> None:
                 except LLMParseError as exc:
                     st.error(str(exc))
     with right:
-        if st.button(tr("恢复已审核的演示标准", "Restore reviewed reference rules"), use_container_width=True):
+        if st.button(tr("恢复 GOLDEN-4 审核基准", "Restore reviewed reference rules"), use_container_width=True):
             st.session_state.criteria = load_cached_demo_criteria()
             st.session_state.results = None
             st.session_state.last_parse_note = tr("已载入 27 条审核标准。", "Loaded 27 reviewed constraints.")
             st.success(st.session_state.last_parse_note)
 
     if not api_key:
-        st.info(tr("当前未配置自动解析服务；仍可使用已审核的演示标准和全部规则分析功能。", "Live extraction is not configured. The reviewed reference rules and all decision analyses remain available."))
+        st.info(tr("当前未配置自动解析服务；已审核的 GOLDEN-4 标准和规则分析功能仍可使用。", "Live extraction is not configured. The reviewed reference rules and all decision analyses remain available."))
     elif not live_enabled:
         st.warning(tr("自动解析服务当前已关闭。", "Live semantic extraction is disabled."))
     elif required_chunks > remaining:
@@ -1208,7 +1220,6 @@ def page_collaboration() -> None:
         ),
         tr("03 · 协作确认", "03 · TEAM SIGN-OFF"),
     )
-    workflow_strip(3)
     if not st.session_state.criteria:
         st.warning(tr("请先完成标准解析与本地审核。", "Complete local rule review before team sign-off."))
         st.button(tr("返回标准审核", "Back to rule review"), type="primary", on_click=go_to, args=("标准解析",))
@@ -1229,7 +1240,7 @@ def page_collaboration() -> None:
         insight_card(
             tr("飞书连接", "Feishu connection"),
             tr("已就绪", "Ready") if enabled and configured else tr("待配置", "Optional"),
-            tr("不影响本地演示与规则计算", "Local simulation remains available"),
+            tr("不影响本地审核与规则计算", "Local rule review remains available"),
         )
 
     section_title(tr("协作流程", "Controlled review hand-off"))
@@ -1328,7 +1339,7 @@ def page_collaboration() -> None:
             "修改意见": st.column_config.TextColumn(width="large"),
         },
     )
-    st.caption(tr("预览不包含候选者明细；飞书审核不是仿真运行的强制前置条件。", "The preview contains no candidate-level data. Feishu sign-off is optional for the offline demonstration."))
+    st.caption(tr("预览不包含候选者明细；飞书审核不是队列评估的强制前置条件。", "The preview contains no candidate-level data. Feishu sign-off is optional for cohort evaluation."))
     st.button(
         tr("继续运行方案约束仿真", "Continue to cohort laboratory"),
         type="primary",
@@ -1347,7 +1358,6 @@ def page_screening() -> None:
         ),
         tr("04 · 约束仿真", "04 · COHORT LAB"),
     )
-    workflow_strip(4)
     if not st.session_state.criteria:
         st.warning(tr("请先完成方案约束审核。", "Review the protocol constraints before running the cohort lab."))
         return
@@ -1482,14 +1492,13 @@ def page_screening() -> None:
 
 def page_analysis() -> None:
     page_header(
-        tr("方案约束决策沙盘", "Protocol decision sandbox"),
+        tr("方案情景分析", "Protocol scenario analysis"),
         tr(
             "从候选规模、边际约束、数据负担和人群代表性四个角度比较方案情景，不自动给出放宽或收紧建议。",
             "Compare protocol scenarios across candidate scale, marginal constraint impact, information burden and cohort representation—without auto-recommending a protocol change.",
         ),
         tr("05 · 决策评估", "05 · DECISION VIEW"),
     )
-    workflow_strip(5)
     ensure_results()
     if not st.session_state.results:
         st.warning(tr("请先运行方案约束仿真。", "Run the cohort laboratory before opening the decision view."))
@@ -1930,9 +1939,9 @@ def page_validation() -> None:
         tr("验证证据与适用边界", "Evidence register and decision boundaries"),
         tr(
             "把已经完成的工程验证、正在采集的业务证据和不能外推的结论分开呈现。",
-            "Separate verified engineering behaviour from pending business evidence and claims that the prototype cannot support.",
+            "Separate verified engineering behaviour from pending business evidence and conclusions outside the system's current scope.",
         ),
-        tr("复赛证据", "ROUND 40 EVIDENCE"),
+        tr("系统质量", "SYSTEM QUALITY"),
     )
     criteria = st.session_state.criteria
     traceable = sum(bool(item.source_text and item.source_reference) for item in criteria)
@@ -1962,7 +1971,7 @@ def page_validation() -> None:
             keys["claim"]: tr("受支持运算符和判定优先级可重复执行", "Supported operators and precedence rules execute reproducibly"),
         },
         {
-            keys["item"]: tr("离线完整演示路径", "Offline end-to-end path"),
+            keys["item"]: tr("离线完整工作流", "Offline end-to-end workflow"),
             keys["status"]: tr("已完成", "Verified"),
             keys["evidence"]: tr("无 API Key 时仍可载入、审核、仿真和分析", "Protocol, review, simulation and analysis work without an API key"),
             keys["claim"]: tr("评审现场不依赖外部模型服务", "The reviewer path does not depend on a live model service"),
@@ -2130,12 +2139,12 @@ def page_validation() -> None:
                 except FeishuError as exc:
                     st.error(str(exc))
 
-    section_title(tr("当前结果不能支持的结论", "Claims this prototype does not support"))
+    section_title(tr("当前结果不能支持的结论", "Conclusions outside the current system scope"))
     boundary_columns = st.columns(3)
     boundaries = [
         (tr("不代表真实入组率", "Not a real enrolment rate"), tr("500 名候选者为合成数据，只用于验证计算和展示流程。", "The 500 records are synthetic and validate only the workflow and calculations.")),
         (tr("不自动修改方案", "No automatic protocol amendment"), tr("情景比较用于讨论权衡，任何变更仍需医学、统计和伦理审核。", "Scenario analysis frames trade-offs; medical, statistical and ethics review remain required.")),
-        (tr("不处理真实患者决策", "No patient-level clinical decision"), tr("原型不诊断、不自动入组，也不替代研究者判断。", "The prototype does not diagnose, enrol or replace investigator judgement.")),
+        (tr("不处理真实患者决策", "No patient-level clinical decision"), tr("系统不诊断、不自动入组，也不替代研究者判断。", "The system does not diagnose, enrol or replace investigator judgement.")),
     ]
     for column, (title, note) in zip(boundary_columns, boundaries):
         with column:
@@ -2145,73 +2154,65 @@ def page_validation() -> None:
             )
 
 
-def sidebar() -> str:
-    with st.sidebar:
-        st.radio(
-            "Language / 语言",
-            options=["zh", "en"],
-            format_func=lambda item: "中文" if item == "zh" else "English",
-            horizontal=True,
-            key="language",
-            label_visibility="collapsed",
+def top_navigation() -> str:
+    page = st.session_state.navigation
+    source: TrialSource = st.session_state.source
+    study_name = (
+        "GOLDEN-4 · Phase III COPD"
+        if source.identifier == "NCT02347774"
+        else source.title
+    )
+    with st.container(key="application_header"):
+        brand_col, study_col, language_col = st.columns(
+            [2.5, 5.2, 1.25], vertical_alignment="center"
         )
-        st.markdown(
-            "<div class='ts-brand'><div class='ts-brand-mark'>TS</div><div>"
-            "<div class='ts-brand-name'>TrialScope</div>"
-            f"<div class='ts-brand-subtitle'>{escape(tr('方案约束仿真与协同决策', 'Protocol decision sandbox'))}</div></div></div>",
+        brand_col.markdown(
+            "<div class='ts-top-brand'><span>TS</span><div><b>TrialScope</b>"
+            f"<small>{escape(tr('临床招募可行性工作台', 'Clinical Feasibility Workspace'))}</small></div></div>",
             unsafe_allow_html=True,
         )
-        st.markdown(f"<div class='ts-nav-label'>{escape(tr('工作流程', 'DECISION PATH'))}</div>", unsafe_allow_html=True)
-        nav_items = [
-            ("项目说明", tr("项目概览", "Overview")),
-            ("试验 / PDF 导入", tr("01  方案导入", "01  Protocol source")),
-            ("标准解析", tr("02  标准审核", "02  Rule review")),
-            ("协作审核", tr("03  协作确认", "03  Team sign-off")),
-            ("患者预筛", tr("04  约束仿真", "04  Cohort lab")),
-            ("招募分析", tr("05  决策评估", "05  Decision view")),
-        ]
-        page = st.session_state.navigation
+        study_col.markdown(
+            f"<div class='ts-top-study'><span>{escape(tr('当前研究', 'ACTIVE STUDY'))}</span>"
+            f"<b>{escape(source.identifier)} · {escape(study_name)}</b></div>",
+            unsafe_allow_html=True,
+        )
+        with language_col:
+            st.radio(
+                "Language / 语言",
+                options=["zh", "en"],
+                format_func=lambda item: "中文" if item == "zh" else "EN",
+                horizontal=True,
+                key="language",
+                label_visibility="collapsed",
+            )
+
+    nav_items = [
+        ("项目说明", tr("总览", "Overview")),
+        ("试验 / PDF 导入", tr("方案导入", "Protocol")),
+        ("标准解析", tr("标准审核", "Rule review")),
+        ("协作审核", tr("协作中心", "Collaboration")),
+        ("患者预筛", tr("队列评估", "Cohort evaluation")),
+        ("招募分析", tr("情景分析", "Scenario analysis")),
+        ("验证证据", tr("质量控制", "Quality")),
+    ]
+    with st.container(key="top_navigation"):
+        columns = st.columns([0.72, 0.92, 0.92, 1.02, 1.02, 1.02, 0.82], gap="small")
         for index, (page_name, label) in enumerate(nav_items):
             state = "active" if page_name == page else "idle"
-            with st.container(key=f"sidebar_nav_{index}_{state}"):
-                st.button(
-                    label,
-                    key=f"sidebar_nav_button_{index}",
-                    use_container_width=True,
-                    on_click=go_to,
-                    args=(page_name,),
-                )
-        st.markdown(
-            f"<div class='ts-sidebar-help'>{escape(tr('建议按 01–05 完成。飞书未连接时可跳过协作步骤，不影响离线演示。', 'Follow 01–05 for the full story. Feishu sign-off is optional in offline demo mode.'))}</div>",
-            unsafe_allow_html=True,
-        )
-        st.markdown(f"<div class='ts-nav-label ts-nav-label-secondary'>{escape(tr('复赛材料', 'ROUND 40 EVIDENCE'))}</div>", unsafe_allow_html=True)
-        validation_state = "active" if page == "验证证据" else "idle"
-        with st.container(key=f"sidebar_validation_{validation_state}"):
-            st.button(
-                tr("验证证据与边界", "Evidence register"),
-                key="sidebar_validation_button",
-                use_container_width=True,
-                on_click=go_to,
-                args=("验证证据",),
-            )
-        source: TrialSource = st.session_state.source
-        study_label = tr("当前研究", "REFERENCE STUDY")
-        st.markdown(
-            f"<div class='ts-sidebar-study'><div class='ts-nav-label'>{escape(study_label)}</div>"
-            f"<div class='ts-sidebar-id'>{escape(source.identifier)}</div>"
-            f"<div class='ts-sidebar-title'>{escape(source.title)}</div></div>",
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            f"<div class='ts-boundary'>{escape(tr('仅使用公开试验与合成候选者。所有结果均为原型模拟。', 'Public protocol plus synthetic cohort. All outputs are prototype simulations.'))}</div>",
-            unsafe_allow_html=True,
-        )
+            with columns[index]:
+                with st.container(key=f"top_nav_{index}_{state}"):
+                    st.button(
+                        label,
+                        key=f"top_nav_button_{index}",
+                        use_container_width=True,
+                        on_click=go_to,
+                        args=(page_name,),
+                    )
     return page
 
 
 init_state()
-current_page = sidebar()
+current_page = top_navigation()
 
 if current_page == "项目说明":
     page_home()

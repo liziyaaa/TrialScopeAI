@@ -70,11 +70,26 @@ def test_english_interface_uses_adapted_decision_language():
     app.session_state["language"] = "en"
     app.run(timeout=40)
     markdown_values = [item.value for item in app.markdown]
-    assert any("Stress-test protocol constraints" in value for value in markdown_values)
-    assert any("Beyond automated eligibility screening" in value for value in markdown_values)
+    assert any("Recruitment feasibility overview" in value for value in markdown_values)
+    assert any("Cohort operations" in value for value in markdown_values)
     labels = [item.label for item in app.button]
-    assert "04  Cohort lab" in labels
-    assert "05  Decision view" in labels
+    assert "Cohort evaluation" in labels
+    assert "Scenario analysis" in labels
+
+
+def test_global_navigation_is_top_level_and_sidebar_is_removed():
+    app = AppTest.from_file("app.py", default_timeout=40).run()
+    labels = [item.label for item in app.button]
+    assert labels[:7] == [
+        "总览",
+        "方案导入",
+        "标准审核",
+        "协作中心",
+        "队列评估",
+        "情景分析",
+        "质量控制",
+    ]
+    assert not app.sidebar.button
 
 
 def test_english_decision_page_renders_tradeoff_controls():
