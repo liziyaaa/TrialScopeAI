@@ -33,6 +33,16 @@ span[data-testid="stIconMaterial"] {
     color: var(--ts-ink);
 }
 
+header[data-testid="stHeader"],
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+[data-testid="stStatusWidget"],
+[data-testid="manage-app-button"],
+#MainMenu,
+footer {
+    display: none !important;
+}
+
 .block-container {
     max-width: 1420px;
     padding-top: .65rem;
