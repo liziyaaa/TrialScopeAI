@@ -10,6 +10,7 @@ from src.feishu import (
     apply_reviewed_records,
     criterion_to_feishu_fields,
     feishu_url_value,
+    records_for_trial,
 )
 from src.models import Criterion
 
@@ -55,6 +56,15 @@ def test_non_web_source_is_omitted_from_url_field():
     )
     fields = criterion_to_feishu_fields("protocol.pdf", criterion)
     assert "来源链接" not in fields
+
+
+def test_records_for_trial_does_not_treat_zero_matches_as_reviewed():
+    records = [
+        {"record_id": "rec_1", "fields": {"试验编号": "NCT02347774"}},
+        {"record_id": "rec_2", "fields": {"试验编号": "NCT99999999"}},
+    ]
+    assert records_for_trial(records, "NCT03081806") == []
+    assert records_for_trial(records, "NCT02347774") == [records[0]]
 
 
 def test_reviewed_record_builds_diff_without_mutating_original():

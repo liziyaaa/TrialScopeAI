@@ -174,6 +174,18 @@ def _record_fields(record: dict[str, Any]) -> dict[str, Any]:
     return fields if isinstance(fields, dict) else {}
 
 
+def records_for_trial(
+    records: Sequence[dict[str, Any]], trial_id: str
+) -> list[dict[str, Any]]:
+    """Return only records belonging to the requested trial identifier."""
+
+    return [
+        record
+        for record in records
+        if str(_record_fields(record).get("试验编号", "")) == trial_id
+    ]
+
+
 def _select_value(value: Any) -> str:
     if isinstance(value, list):
         return str(value[0]) if value else ""
@@ -199,12 +211,7 @@ def apply_reviewed_records(
 ) -> tuple[list[Criterion], list[dict[str, str]]]:
     """Prepare reviewed criteria and a human-readable diff without mutating input."""
 
-    scoped_records = [
-        record
-        for record in records
-        if trial_id is None
-        or str(_record_fields(record).get("试验编号", "")) == trial_id
-    ]
+    scoped_records = list(records) if trial_id is None else records_for_trial(records, trial_id)
     records_by_id = {
         str(_record_fields(record).get("标准编号", "")).upper(): record
         for record in scoped_records

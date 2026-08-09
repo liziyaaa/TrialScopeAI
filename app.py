@@ -34,6 +34,7 @@ from src.feishu import (
     apply_reviewed_records,
     criterion_to_feishu_fields,
     feishu_url_value,
+    records_for_trial,
 )
 from src.config import (
     DATA_DIR,
@@ -501,14 +502,25 @@ def render_feishu_review_panel() -> None:
             with st.spinner(tr("正在读取医学审核结果...", "Reading clinical review fields...")):
                 with FeishuClient(settings) as client:
                     records = client.list_records()
-                reviewed, diffs = apply_reviewed_records(
-                    st.session_state.criteria,
+                trial_records = records_for_trial(
                     records,
-                    trial_id=st.session_state.source.identifier,
+                    st.session_state.source.identifier,
                 )
+                if trial_records:
+                    reviewed, diffs = apply_reviewed_records(
+                        st.session_state.criteria,
+                        trial_records,
+                    )
+                else:
+                    reviewed, diffs = None, []
             st.session_state.feishu_pending_criteria = reviewed
             st.session_state.feishu_review_diffs = diffs
-            if diffs:
+            if not trial_records:
+                st.warning(tr(
+                    "飞书中还没有当前试验的审核记录，请先完成同步。",
+                    "No review records exist for this trial in Feishu. Sync the constraints first.",
+                ))
+            elif diffs:
                 st.info(tr(f"读取完成，发现 {len(diffs)} 处待确认修改。", f"Review loaded with {len(diffs)} change(s) awaiting confirmation."))
             else:
                 st.success(tr("读取完成，飞书审核值与当前规则没有差异。", "Review loaded; no differences from the current constraints."))
@@ -821,7 +833,7 @@ def page_home() -> None:
             "<div class='ts-proof-list'>"
             f"<div><b>27</b><span>{escape(tr('人工审核的 GOLDEN-4 方案约束', 'Clinically reviewed GOLDEN-4 constraints'))}</span></div>"
             f"<div><b>50</b><span>{escape(tr('阈值、缺失、时间窗与主观判断边界案例', 'Boundary cases for thresholds, missingness and time windows'))}</span></div>"
-            f"<div><b>53</b><span>{escape(tr('自动化测试与离线完整演示路径', 'Automated checks and an offline demo path'))}</span></div>"
+            f"<div><b>54</b><span>{escape(tr('自动化测试与离线完整演示路径', 'Automated checks and an offline demo path'))}</span></div>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1928,7 +1940,7 @@ def page_validation() -> None:
     metrics = [
         (tr("审核标准", "Reviewed constraints"), str(len(criteria)), tr("GOLDEN-4 人工校核版本", "Clinically reviewed GOLDEN-4 reference")),
         (tr("边界案例", "Boundary cases"), "50", tr("含等值、缺失、时间窗和多重失败", "Thresholds, missingness, windows and multiple failures")),
-        (tr("自动化测试", "Automated checks"), "53", tr("本地与 GitHub Actions 使用同一套测试", "Same suite locally and in GitHub Actions")),
+        (tr("自动化测试", "Automated checks"), "54", tr("本地与 GitHub Actions 使用同一套测试", "Same suite locally and in GitHub Actions")),
         (tr("来源追溯", "Source traceability"), f"{traceable}/{len(criteria)}", tr("标准原文与公开来源均保留", "Source statement and public reference retained")),
     ]
     for column, (label, value, note) in zip(columns, metrics):
