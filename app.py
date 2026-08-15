@@ -14,7 +14,6 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-import streamlit.components.v1 as components
 from streamlit_local_storage import LocalStorage
 
 from src.analytics import (
@@ -775,7 +774,7 @@ def go_to(page: str) -> None:
 def scroll_to_top_if_requested() -> None:
     if not st.session_state.get("scroll_to_top"):
         return
-    components.html(
+    st.html(
         """
         <script>
         window.parent.scrollTo({top: 0, left: 0, behavior: 'instant'});
@@ -783,8 +782,7 @@ def scroll_to_top_if_requested() -> None:
         if (main) main.scrollTo({top: 0, left: 0, behavior: 'instant'});
         </script>
         """,
-        height=0,
-        width=0,
+        unsafe_allow_javascript=True,
     )
     st.session_state.scroll_to_top = False
 
@@ -892,6 +890,7 @@ def page_home() -> None:
             primary, secondary, spacer = st.columns([1.18, 1.08, 1.35], gap="small")
             primary.button(
                 tr("进入研究工作台", "Open workspace"),
+                key="landing_open_workspace_primary",
                 type="primary",
                 use_container_width=True,
                 on_click=go_to,
@@ -899,6 +898,7 @@ def page_home() -> None:
             )
             secondary.button(
                 tr("导入新方案", "Import protocol"),
+                key="landing_import_protocol",
                 use_container_width=True,
                 on_click=go_to,
                 args=("试验 / PDF 导入",),
@@ -990,6 +990,7 @@ def page_home() -> None:
         )
         action_col.button(
             tr("打开工作台", "Open workspace"),
+            key="landing_open_workspace_final",
             type="primary",
             use_container_width=True,
             on_click=go_to,

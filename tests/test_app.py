@@ -110,6 +110,7 @@ def test_global_navigation_is_top_level_and_sidebar_is_removed():
 def test_language_switch_uses_explicit_buttons():
     app = AppTest.from_file("app.py", default_timeout=40).run()
     next(item for item in app.button if item.label == "EN").click().run(timeout=40)
+    assert not app.exception
     assert app.session_state["language"] == "en"
     assert any("Turn protocol constraints into reviewable recruitment decisions" in item.value for item in app.markdown)
 
