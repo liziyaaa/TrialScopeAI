@@ -14,6 +14,8 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import streamlit.components.v1 as components
+from streamlit_local_storage import LocalStorage
 
 from src.analytics import (
     STATUS_LABELS as STATUS_LABELS_ZH,
@@ -47,6 +49,12 @@ from src.llm_parser import (
     load_cached_demo_criteria,
     parse_with_deepseek,
     split_for_llm,
+)
+from src.history import (
+    build_workspace_snapshot,
+    deserialize_history,
+    serialize_history,
+    upsert_workspace,
 )
 from src.models import Criterion, TrialSource
 from src.rules import match_dataframe, results_dataframe
@@ -127,6 +135,12 @@ def init_state() -> None:
         "feishu_review_diffs": [],
         "feishu_sync_note": "",
         "last_parse_note": "已载入 GOLDEN-4 结构化标准。",
+        "scroll_to_top": False,
+        "history_workspaces": [],
+        "history_browser_payload": None,
+        "history_dirty": False,
+        "history_write_revision": 0,
+        "history_storage_available": True,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -157,6 +171,10 @@ def set_source(source: TrialSource, criteria_text: str | None = None) -> None:
             "请进入“标准解析”步骤生成结构化标准。",
             "Continue to rule review to generate structured constraints.",
         )
+    record_workspace_event(
+        tr("方案已导入", "Protocol imported"),
+        source.source_type,
+    )
 
 
 def current_language() -> str:
@@ -165,6 +183,114 @@ def current_language() -> str:
 
 def tr(zh: str, en: str) -> str:
     return en if current_language() == "en" else zh
+
+
+HISTORY_STORAGE_KEY = "trialscopeai.workspace-history.v1"
+
+
+def hydrate_browser_history() -> LocalStorage | None:
+    """Merge this browser's persisted workspaces into the active session."""
+
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return None
+    try:
+        storage = LocalStorage(key="trialscope_browser_storage")
+        payload = storage.getItem(HISTORY_STORAGE_KEY)
+        if (
+            payload is not None
+            and payload != st.session_state.history_browser_payload
+            and not st.session_state.history_dirty
+        ):
+            st.session_state.history_workspaces = deserialize_history(payload)
+            st.session_state.history_browser_payload = payload
+        st.session_state.history_storage_available = True
+        return storage
+    except Exception:
+        st.session_state.history_storage_available = False
+        return None
+
+
+def record_workspace_event(action: str, detail: str = "") -> None:
+    """Save the current protocol state without patient-level records."""
+
+    if "source" not in st.session_state:
+        return
+    snapshot = build_workspace_snapshot(
+        source=st.session_state.source,
+        criteria_text=str(st.session_state.get("criteria_text", "")),
+        criteria=st.session_state.get("criteria", []),
+        results=st.session_state.get("results"),
+        scenario_parameters=st.session_state.get("scenario_parameters", {}),
+        action=action,
+        detail=detail,
+        last_page=str(st.session_state.get("navigation", "研究工作台")),
+    )
+    st.session_state.history_workspaces = upsert_workspace(
+        st.session_state.get("history_workspaces", []), snapshot
+    )
+    st.session_state.history_dirty = True
+
+
+def flush_browser_history(storage: LocalStorage | None) -> None:
+    if not st.session_state.get("history_dirty"):
+        return
+    payload = serialize_history(st.session_state.get("history_workspaces", []))
+    if storage is not None:
+        try:
+            revision = int(st.session_state.get("history_write_revision", 0)) + 1
+            storage.setItem(
+                HISTORY_STORAGE_KEY,
+                payload,
+                key=f"trialscope_history_write_{revision}",
+            )
+            st.session_state.history_write_revision = revision
+            st.session_state.history_browser_payload = payload
+        except Exception:
+            st.session_state.history_storage_available = False
+    st.session_state.history_dirty = False
+
+
+def delete_history_workspace(workspace_id: str) -> None:
+    st.session_state.history_workspaces = [
+        item
+        for item in st.session_state.get("history_workspaces", [])
+        if item.get("workspace_id") != workspace_id
+    ]
+    st.session_state.history_dirty = True
+
+
+def restore_history_workspace(workspace_id: str) -> None:
+    record = next(
+        (
+            item
+            for item in st.session_state.get("history_workspaces", [])
+            if item.get("workspace_id") == workspace_id
+        ),
+        None,
+    )
+    if not record:
+        return
+    source = TrialSource.model_validate(record["source"])
+    criteria = [Criterion.model_validate(item) for item in record.get("criteria", [])]
+    st.session_state.source = source
+    st.session_state.criteria_text = record.get("criteria_text") or source.criteria_text
+    st.session_state.criteria_editor = st.session_state.criteria_text
+    st.session_state.criteria = criteria
+    st.session_state.results = (
+        match_dataframe(st.session_state.patients, criteria) if criteria else None
+    )
+    st.session_state.scenario_parameters = dict(record.get("scenario_parameters") or {})
+    st.session_state.scenario_comparison = None
+    st.session_state.scenario_results = None
+    st.session_state.scenario_snapshot_key = ""
+    last_page = str(record.get("last_page") or "研究工作台")
+    st.session_state.navigation = (
+        last_page
+        if last_page not in {"项目说明", "历史记录"}
+        else "研究工作台"
+    )
+    st.session_state.scroll_to_top = True
+    record_workspace_event(tr("恢复历史工作区", "Workspace restored"))
 
 
 KIND_LABELS_ZH = {"inclusion": "入组", "exclusion": "排除"}
@@ -539,6 +665,7 @@ def render_feishu_review_panel() -> None:
             st.session_state.results = None
             st.session_state.feishu_pending_criteria = None
             st.session_state.feishu_review_diffs = []
+            record_workspace_event(tr("已应用协作审核结果", "Collaboration review applied"))
             st.success(tr("飞书审核结果已应用到当前规则。", "Reviewed changes are now applied to the current constraint set."))
             st.rerun()
         if cancel.button(tr("暂不采用", "Keep current rules"), use_container_width=True):
@@ -642,6 +769,24 @@ def workflow_strip(active_step: int) -> None:
 
 def go_to(page: str) -> None:
     st.session_state.navigation = page
+    st.session_state.scroll_to_top = True
+
+
+def scroll_to_top_if_requested() -> None:
+    if not st.session_state.get("scroll_to_top"):
+        return
+    components.html(
+        """
+        <script>
+        window.parent.scrollTo({top: 0, left: 0, behavior: 'instant'});
+        const main = window.parent.document.querySelector('section.main');
+        if (main) main.scrollTo({top: 0, left: 0, behavior: 'instant'});
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+    st.session_state.scroll_to_top = False
 
 
 def set_language(language: str) -> None:
@@ -731,6 +876,128 @@ def task_row(
 
 
 def page_home() -> None:
+    """Public-facing product introduction, separate from the active study workspace."""
+
+    with st.container(key="landing_hero"):
+        copy_col, flow_col = st.columns([1.16, 0.84], gap="large", vertical_alignment="center")
+        with copy_col:
+            st.markdown(
+                f"""
+                <div class="ts-landing-kicker">{escape(tr('临床招募可行性工作空间', 'CLINICAL RECRUITMENT FEASIBILITY'))}</div>
+                <h1>{escape(tr('把试验方案约束，转成可审核的招募判断', 'Turn protocol constraints into reviewable recruitment decisions'))}</h1>
+                <p>{escape(tr('TrialScope 将方案导入、标准审核、队列评估和情景比较放进同一条工作流，让医学、临床开发和运营团队基于同一份证据讨论招募可行性。', 'TrialScope brings protocol intake, constraint review, cohort evaluation and scenario comparison into one workspace, so clinical development, medical and operations teams can work from the same evidence.'))}</p>
+                """,
+                unsafe_allow_html=True,
+            )
+            primary, secondary, spacer = st.columns([1.18, 1.08, 1.35], gap="small")
+            primary.button(
+                tr("进入研究工作台", "Open workspace"),
+                type="primary",
+                use_container_width=True,
+                on_click=go_to,
+                args=("研究工作台",),
+            )
+            secondary.button(
+                tr("导入新方案", "Import protocol"),
+                use_container_width=True,
+                on_click=go_to,
+                args=("试验 / PDF 导入",),
+            )
+        with flow_col:
+            st.markdown(
+                f"""
+                <div class="ts-landing-flow">
+                    <div class="ts-flow-head"><span>{escape(tr('当前工作流', 'ACTIVE WORKFLOW'))}</span><b>NCT02347774 · GOLDEN-4</b></div>
+                    <div class="ts-flow-row"><span>01</span><div><b>{escape(tr('方案进入', 'Protocol intake'))}</b><small>{escape(tr('NCT、原文或文字型 PDF', 'NCT, source text or searchable PDF'))}</small></div><em>{escape(tr('已就绪', 'Ready'))}</em></div>
+                    <div class="ts-flow-row"><span>02</span><div><b>{escape(tr('标准审核', 'Constraint review'))}</b><small>{escape(tr('原文、字段、阈值和时间窗', 'Source, field, threshold and time window'))}</small></div><em>27</em></div>
+                    <div class="ts-flow-row"><span>03</span><div><b>{escape(tr('队列评估', 'Cohort evaluation'))}</b><small>{escape(tr('逐条证据与主要限制因素', 'Evidence trail and leading constraints'))}</small></div><em>500</em></div>
+                    <div class="ts-flow-row"><span>04</span><div><b>{escape(tr('情景比较', 'Scenario comparison'))}</b><small>{escape(tr('规模变化与人群构成权衡', 'Scale and composition trade-offs'))}</small></div><em>{escape(tr('可比较', 'Compare'))}</em></div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    st.markdown(
+        f"""
+        <div class="ts-landing-section-head">
+            <span>{escape(tr('统一的判断依据', 'ONE DECISION RECORD'))}</span>
+            <h2>{escape(tr('从方案文字到可追溯判断', 'From protocol text to traceable decisions'))}</h2>
+            <p>{escape(tr('减少原文、表格和临时讨论之间的来回切换，让每一步都能回到方案出处。', 'Keep source text, reviewed constraints and feasibility evidence connected throughout the workflow.'))}</p>
+        </div>
+        <div class="ts-capability-grid">
+            <article><span>01</span><h3>{escape(tr('结构化方案约束', 'Structured constraints'))}</h3><p>{escape(tr('保留标准原文，同时整理字段、运算符、阈值、单位和时间窗。', 'Retain the source statement while organizing fields, operators, thresholds, units and time windows.'))}</p></article>
+            <article><span>02</span><h3>{escape(tr('医学审核与协作', 'Clinical review'))}</h3><p>{escape(tr('区分可执行规则与人工判断项，记录修改意见、审核状态和版本。', 'Separate executable rules from clinical judgement and retain review status, comments and versions.'))}</p></article>
+            <article><span>03</span><h3>{escape(tr('队列约束分析', 'Cohort constraint analysis'))}</h3><p>{escape(tr('查看筛选路径、主要排除因素、缺失信息和每位候选者的证据链。', 'Inspect the screening path, leading blockers, missing information and candidate-level evidence.'))}</p></article>
+            <article><span>04</span><h3>{escape(tr('方案情景比较', 'Protocol scenario comparison'))}</h3><p>{escape(tr('比较参数变化前后的候选规模和人群构成，为跨团队讨论提供量化依据。', 'Compare candidate scale and cohort composition before and after parameter changes.'))}</p></article>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        f"""
+        <div class="ts-landing-workflow">
+            <div class="ts-workflow-copy">
+                <span>{escape(tr('标准工作流', 'WORKFLOW'))}</span>
+                <h2>{escape(tr('四个阶段完成一次可行性评估', 'Four stages for a feasibility assessment'))}</h2>
+                <p>{escape(tr('每个阶段都有明确的输入、输出和人工确认点；历史工作区会保留最近进度。', 'Each stage has a clear input, output and review point. Workspace history retains the latest progress.'))}</p>
+            </div>
+            <div class="ts-workflow-steps">
+                <div><b>01</b><span>{escape(tr('导入方案', 'Import'))}</span><small>{escape(tr('核对标准原文', 'Confirm source text'))}</small></div>
+                <div><b>02</b><span>{escape(tr('审核标准', 'Review'))}</span><small>{escape(tr('确认可执行规则', 'Approve constraints'))}</small></div>
+                <div><b>03</b><span>{escape(tr('评估队列', 'Evaluate'))}</span><small>{escape(tr('定位限制因素', 'Identify blockers'))}</small></div>
+                <div><b>04</b><span>{escape(tr('比较情景', 'Compare'))}</span><small>{escape(tr('讨论规模与构成', 'Discuss trade-offs'))}</small></div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        f"""
+        <div class="ts-landing-section-head compact">
+            <span>{escape(tr('跨职能协作', 'CROSS-FUNCTIONAL REVIEW'))}</span>
+            <h2>{escape(tr('不同角色，共用同一条证据链', 'Different roles, one evidence trail'))}</h2>
+        </div>
+        <div class="ts-role-grid">
+            <article><h3>{escape(tr('临床开发', 'Clinical development'))}</h3><p>{escape(tr('识别对候选规模影响最大的方案约束，准备可行性讨论。', 'Identify the protocol constraints with the greatest impact on candidate scale.'))}</p></article>
+            <article><h3>{escape(tr('医学团队', 'Medical'))}</h3><p>{escape(tr('审核结构化标准，明确哪些判断必须保留人工复核。', 'Review structured criteria and preserve decisions that require clinical judgement.'))}</p></article>
+            <article><h3>{escape(tr('临床运营', 'Clinical operations'))}</h3><p>{escape(tr('查看信息缺口、工作负担和情景变化，形成执行层面的反馈。', 'Review information gaps, workload and scenario changes for operational feedback.'))}</p></article>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    evidence = [
+        ("3", tr("种方案输入方式", "protocol input routes")),
+        ("27", tr("条审核基准规则", "reviewed reference constraints")),
+        ("4", tr("类队列判断状态", "cohort decision states")),
+        ("100%", tr("标准来源可追溯", "source traceability")),
+    ]
+    evidence_cols = st.columns(4, gap="small")
+    for column, (value, label) in zip(evidence_cols, evidence):
+        column.markdown(
+            f"<div class='ts-evidence-item'><b>{escape(value)}</b><span>{escape(label)}</span></div>",
+            unsafe_allow_html=True,
+        )
+
+    with st.container(key="landing_final_cta"):
+        text_col, action_col = st.columns([3.6, 1.1], vertical_alignment="center")
+        text_col.markdown(
+            f"<h2>{escape(tr('从当前研究开始', 'Continue with the active study'))}</h2>"
+            f"<p>{escape(tr('打开 GOLDEN-4 工作区，查看完整的标准、队列和情景分析。', 'Open the GOLDEN-4 workspace to review constraints, cohort results and scenarios.'))}</p>",
+            unsafe_allow_html=True,
+        )
+        action_col.button(
+            tr("打开工作台", "Open workspace"),
+            type="primary",
+            use_container_width=True,
+            on_click=go_to,
+            args=("研究工作台",),
+        )
+
+
+def page_workspace() -> None:
     ensure_results()
     results = st.session_state.results or []
     patients = st.session_state.patients
@@ -899,6 +1166,132 @@ def page_home() -> None:
         f"<div class='ts-system-footnote'>{escape(tr('数据范围：公开试验方案与合成候选队列。页面结果用于方案评估和协作审核，不用于诊断或自动入组。', 'Data scope: public protocol plus a synthetic cohort. Results support protocol assessment and review; they are not used for diagnosis or automatic enrolment.'))}</div>",
         unsafe_allow_html=True,
     )
+
+
+def page_history() -> None:
+    page_header(
+        tr("研究历史", "Workspace history"),
+        tr(
+            "回到已处理过的方案、审核状态和分析阶段，无需重新导入或重复设置。",
+            "Return to prior protocols, review states and analysis stages without rebuilding the workflow.",
+        ),
+        tr("工作区记录", "WORKSPACE RECORDS"),
+    )
+
+    history = list(st.session_state.get("history_workspaces", []))
+    scope_col, action_col = st.columns([4.1, 1.2], vertical_alignment="center")
+    scope_col.markdown(
+        f"<div class='ts-history-scope'><b>{escape(tr('仅保存在当前浏览器', 'Stored in this browser only'))}</b>"
+        f"<span>{escape(tr('保存方案、审核标准、分析摘要和操作时间；不保存 PDF 原文件或候选人明细。', 'Stores protocol metadata, reviewed constraints, aggregate analysis and activity time. PDF files and candidate-level rows are excluded.'))}</span></div>",
+        unsafe_allow_html=True,
+    )
+    if action_col.button(
+        tr("保存当前研究", "Save current study"),
+        type="primary",
+        use_container_width=True,
+    ):
+        record_workspace_event(tr("手动保存工作区", "Workspace saved"))
+        st.success(tr("当前进度已保存。", "Current progress saved."))
+        history = list(st.session_state.history_workspaces)
+
+    if not history:
+        with st.container(key="history_empty_state"):
+            st.markdown(
+                f"<h3>{escape(tr('还没有已保存的研究', 'No saved studies yet'))}</h3>"
+                f"<p>{escape(tr('导入方案或保存当前研究后，会在这里形成可恢复的工作区。', 'Import a protocol or save the active study to create a restorable workspace.'))}</p>",
+                unsafe_allow_html=True,
+            )
+            first, second, spacer = st.columns([1.1, 1.1, 3.4])
+            first.button(
+                tr("导入方案", "Import protocol"),
+                type="primary",
+                use_container_width=True,
+                on_click=go_to,
+                args=("试验 / PDF 导入",),
+            )
+            second.button(
+                tr("打开工作台", "Open workspace"),
+                use_container_width=True,
+                on_click=go_to,
+                args=("研究工作台",),
+            )
+        return
+
+    total_events = sum(len(item.get("events") or []) for item in history)
+    reviewed = sum(int(item.get("criterion_count") or 0) > 0 for item in history)
+    metrics = st.columns(3)
+    metrics[0].metric(tr("研究工作区", "Studies"), len(history))
+    metrics[1].metric(tr("已有审核标准", "With reviewed constraints"), reviewed)
+    metrics[2].metric(tr("保留操作记录", "Recorded actions"), total_events)
+
+    section_title(tr("最近研究", "Recent studies"))
+    for record in history:
+        workspace_id = str(record.get("workspace_id", ""))
+        summary = dict(record.get("result_summary") or {})
+        updated_at = str(record.get("updated_at", ""))
+        try:
+            display_time = datetime.fromisoformat(updated_at).strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            display_time = updated_at
+        with st.container(border=True, key=f"history_record_{workspace_id}"):
+            copy_col, restore_col, delete_col = st.columns(
+                [4.7, 1.05, 0.85], vertical_alignment="center"
+            )
+            copy_col.markdown(
+                f"<div class='ts-history-record'><span>{escape(str(record.get('identifier', 'STUDY')))}</span>"
+                f"<h3>{escape(str(record.get('title') or tr('未命名研究', 'Untitled study')))}</h3>"
+                f"<p>{escape(tr('最近操作', 'Last action'))}: {escape(str(record.get('last_action', '—')))} · {escape(display_time)}</p></div>",
+                unsafe_allow_html=True,
+            )
+            if restore_col.button(
+                tr("恢复并继续", "Restore"),
+                key=f"restore_history_{workspace_id}",
+                type="primary",
+                use_container_width=True,
+            ):
+                restore_history_workspace(workspace_id)
+                st.rerun()
+            if delete_col.button(
+                tr("删除", "Delete"),
+                key=f"delete_history_{workspace_id}",
+                use_container_width=True,
+            ):
+                delete_history_workspace(workspace_id)
+                st.rerun()
+
+            facts = st.columns(4)
+            facts[0].markdown(
+                f"<div class='ts-history-fact'><b>{int(record.get('criterion_count') or 0)}</b><span>{escape(tr('条标准', 'constraints'))}</span></div>",
+                unsafe_allow_html=True,
+            )
+            facts[1].markdown(
+                f"<div class='ts-history-fact'><b>{int(summary.get('total') or 0)}</b><span>{escape(tr('条队列记录', 'cohort records'))}</span></div>",
+                unsafe_allow_html=True,
+            )
+            facts[2].markdown(
+                f"<div class='ts-history-fact'><b>{int(summary.get('eligible') or 0)}</b><span>{escape(tr('规则符合', 'rule-eligible'))}</span></div>",
+                unsafe_allow_html=True,
+            )
+            facts[3].markdown(
+                f"<div class='ts-history-fact'><b>{len(record.get('events') or [])}</b><span>{escape(tr('次操作', 'actions'))}</span></div>",
+                unsafe_allow_html=True,
+            )
+
+            with st.expander(tr("查看操作时间线", "View activity timeline")):
+                events = list(record.get("events") or [])
+                for event in reversed(events):
+                    event_at = str(event.get("at", ""))
+                    try:
+                        event_time = datetime.fromisoformat(event_at).strftime("%m-%d %H:%M")
+                    except ValueError:
+                        event_time = event_at
+                    detail = str(event.get("detail") or "")
+                    st.markdown(
+                        f"<div class='ts-history-event'><time>{escape(event_time)}</time>"
+                        f"<b>{escape(str(event.get('action', '')))}</b>"
+                        f"<span>{escape(detail)}</span></div>",
+                        unsafe_allow_html=True,
+                    )
 
 
 def page_import() -> None:
@@ -1111,6 +1504,10 @@ def page_parse() -> None:
                         f"{'命中缓存' if outcome.from_cache else '实时解析完成'}：{outcome.model}，{outcome.chunk_count} 个文本块。",
                         f"{'Cached result' if outcome.from_cache else 'Live extraction complete'}: {outcome.model}, {outcome.chunk_count} text block(s).",
                     )
+                    record_workspace_event(
+                        tr("结构化标准已生成", "Structured constraints generated"),
+                        outcome.model,
+                    )
                     st.success(st.session_state.last_parse_note)
                 except LLMParseError as exc:
                     st.error(str(exc))
@@ -1119,6 +1516,7 @@ def page_parse() -> None:
             st.session_state.criteria = load_cached_demo_criteria()
             st.session_state.results = None
             st.session_state.last_parse_note = tr("已载入 27 条审核标准。", "Loaded 27 reviewed constraints.")
+            record_workspace_event(tr("审核基准已恢复", "Reviewed reference restored"))
             st.success(st.session_state.last_parse_note)
 
     if not api_key:
@@ -1193,6 +1591,7 @@ def page_parse() -> None:
             st.session_state.criteria = criteria_from_review_frame(editable)
             st.session_state.results = None
             go_to("协作审核")
+            record_workspace_event(tr("标准审核已保存", "Constraint review saved"))
             st.rerun()
         except ValueError as exc:
             st.error(str(exc))
@@ -1376,6 +1775,7 @@ def page_screening() -> None:
                 st.session_state.patients, st.session_state.criteria
             )
             st.session_state.scenario_comparison = None
+            record_workspace_event(tr("队列评估已运行", "Cohort evaluation run"))
         st.success(tr("基线约束仿真完成。", "Baseline cohort simulation complete."))
     ensure_results()
     results = st.session_state.results
@@ -1782,6 +2182,7 @@ def page_analysis() -> None:
                 f"{st.session_state.source.identifier}:scenario:"
                 f"{datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y%m%d%H%M%S')}"
             )
+            record_workspace_event(tr("情景分析已运行", "Scenario analysis run"))
 
     if st.session_state.scenario_comparison is not None:
         comparison = st.session_state.scenario_comparison
@@ -2196,16 +2597,18 @@ def top_navigation() -> str:
                             )
 
     nav_items = [
-        ("项目说明", tr("总览", "Overview")),
+        ("项目说明", tr("首页", "Home")),
+        ("研究工作台", tr("工作台", "Workspace")),
         ("试验 / PDF 导入", tr("方案导入", "Protocol")),
         ("标准解析", tr("标准审核", "Rule review")),
         ("协作审核", tr("协作中心", "Collaboration")),
         ("患者预筛", tr("队列评估", "Cohort evaluation")),
         ("招募分析", tr("情景分析", "Scenario analysis")),
+        ("历史记录", tr("历史记录", "History")),
         ("验证证据", tr("质量控制", "Quality")),
     ]
     with st.container(key="top_navigation"):
-        columns = st.columns([0.72, 0.92, 0.92, 1.02, 1.02, 1.02, 0.82], gap="small")
+        columns = st.columns([0.62, 0.76, 0.88, 0.9, 1.0, 1.0, 1.0, 0.82, 0.78], gap="small")
         for index, (page_name, label) in enumerate(nav_items):
             state = "active" if page_name == page else "idle"
             with columns[index]:
@@ -2221,10 +2624,14 @@ def top_navigation() -> str:
 
 
 init_state()
+browser_storage = hydrate_browser_history()
 current_page = top_navigation()
+scroll_to_top_if_requested()
 
 if current_page == "项目说明":
     page_home()
+elif current_page == "研究工作台":
+    page_workspace()
 elif current_page == "试验 / PDF 导入":
     page_import()
 elif current_page == "标准解析":
@@ -2235,5 +2642,9 @@ elif current_page == "患者预筛":
     page_screening()
 elif current_page == "招募分析":
     page_analysis()
+elif current_page == "历史记录":
+    page_history()
 else:
     page_validation()
+
+flush_browser_history(browser_storage)

@@ -5,7 +5,17 @@ def test_app_starts_offline_with_cached_demo():
     app = AppTest.from_file("app.py", default_timeout=30).run()
     assert not app.exception
     assert any("TrialScope" in item.value for item in app.markdown)
+    assert any("把试验方案约束，转成可审核的招募判断" in item.value for item in app.markdown)
+    assert len(app.metric) == 0
+
+
+def test_workspace_contains_operational_dashboard():
+    app = AppTest.from_file("app.py", default_timeout=30).run()
+    app.session_state["navigation"] = "研究工作台"
+    app.run()
+    assert not app.exception
     assert len(app.metric) >= 4
+    assert any("招募可行性总览" in item.value for item in app.markdown)
 
 
 def test_screening_page_works_without_api_key():
@@ -70,8 +80,8 @@ def test_english_interface_uses_adapted_decision_language():
     app.session_state["language"] = "en"
     app.run(timeout=40)
     markdown_values = [item.value for item in app.markdown]
-    assert any("Recruitment feasibility overview" in value for value in markdown_values)
-    assert any("Cohort operations" in value for value in markdown_values)
+    assert any("Turn protocol constraints into reviewable recruitment decisions" in value for value in markdown_values)
+    assert any("From protocol text to traceable decisions" in value for value in markdown_values)
     labels = [item.label for item in app.button]
     assert "Cohort evaluation" in labels
     assert "Scenario analysis" in labels
@@ -81,16 +91,18 @@ def test_global_navigation_is_top_level_and_sidebar_is_removed():
     app = AppTest.from_file("app.py", default_timeout=40).run()
     labels = [item.label for item in app.button]
     expected_navigation = [
-        "总览",
+        "首页",
+        "工作台",
         "方案导入",
         "标准审核",
         "协作中心",
         "队列评估",
         "情景分析",
+        "历史记录",
         "质量控制",
     ]
     assert all(label in labels for label in expected_navigation)
-    assert labels.index("总览") < labels.index("质量控制")
+    assert labels.index("首页") < labels.index("质量控制")
     assert "中文" in labels and "EN" in labels
     assert not app.sidebar.button
 
@@ -99,7 +111,19 @@ def test_language_switch_uses_explicit_buttons():
     app = AppTest.from_file("app.py", default_timeout=40).run()
     next(item for item in app.button if item.label == "EN").click().run(timeout=40)
     assert app.session_state["language"] == "en"
-    assert any("Recruitment feasibility overview" in item.value for item in app.markdown)
+    assert any("Turn protocol constraints into reviewable recruitment decisions" in item.value for item in app.markdown)
+
+
+def test_history_page_can_save_and_restore_current_workspace():
+    app = AppTest.from_file("app.py", default_timeout=30).run()
+    app.session_state["navigation"] = "历史记录"
+    app.run()
+    next(item for item in app.button if item.label == "保存当前研究").click().run()
+    assert not app.exception
+    assert len(app.session_state["history_workspaces"]) == 1
+    next(item for item in app.button if item.label == "恢复并继续").click().run()
+    assert app.session_state["navigation"] == "研究工作台"
+    assert len(app.session_state["criteria"]) == 27
 
 
 def test_english_decision_page_renders_tradeoff_controls():

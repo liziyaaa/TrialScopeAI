@@ -20,6 +20,8 @@ Thumbs.db
 # Temporary uploads and renders
 uploads/
 tmp/
+.chrome-profile/
+output/*-review.png
 
 # Streamlit runtime
 .streamlit/cache/
