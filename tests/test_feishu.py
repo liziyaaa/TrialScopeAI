@@ -88,7 +88,38 @@ def test_reviewed_record_builds_diff_without_mutating_original():
     assert original.operator == "lt"
     assert reviewed[0].operator == "lte"
     assert reviewed[0].value == 0.72
-    assert {item["字段"] for item in diffs} == {"operator", "value"}
+    assert reviewed[0].review_status == "confirmed"
+    assert {item["字段"] for item in diffs} == {"审核状态", "operator", "value"}
+
+
+def test_review_status_change_is_a_visible_diff_even_when_rule_fields_match():
+    original = _criterion()
+    reviewed, diffs = apply_reviewed_records(
+        [original],
+        [
+            {
+                "record_id": "rec_1",
+                "fields": {
+                    "标准编号": "I06",
+                    "审核状态": "已确认",
+                    "审核后指标": "post_bd_fev1_fvc",
+                    "审核后运算符": "小于",
+                    "审核后阈值": "0.7",
+                    "审核后单位": "ratio",
+                },
+            }
+        ],
+    )
+
+    assert reviewed[0].review_status == "confirmed"
+    assert diffs == [
+        {
+            "标准编号": "I06",
+            "字段": "审核状态",
+            "原值": "待审核",
+            "审核值": "已确认",
+        }
+    ]
 
 
 def test_sync_creates_and_updates_while_preserving_review_fields():

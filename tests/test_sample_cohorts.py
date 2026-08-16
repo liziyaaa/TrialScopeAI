@@ -19,6 +19,7 @@ def test_four_sample_cohorts_are_valid_upload_files():
         assert "patient_id" in cohort.columns
         assert cohort["patient_id"].astype(str).str.strip().ne("").all()
         assert cohort["patient_id"].is_unique
+        assert len(cohort) >= 500
         assert len(cohort) <= 50_000
 
 

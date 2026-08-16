@@ -32,6 +32,7 @@ from src.feishu import (
     FeishuClient,
     FeishuError,
     FeishuSettings,
+    REVIEW_STATUS_TO_FEISHU,
     apply_reviewed_records,
     criterion_to_feishu_fields,
     feishu_url_value,
@@ -142,6 +143,7 @@ def init_state() -> None:
         "feishu_pending_criteria": None,
         "feishu_review_diffs": [],
         "feishu_sync_note": "",
+        "feishu_pull_note": "",
         "last_parse_note": "尚未生成结构化标准。",
         "scroll_to_top": False,
         "history_workspaces": [],
@@ -170,6 +172,10 @@ def set_source(source: TrialSource, criteria_text: str | None = None) -> None:
     st.session_state.scenario_results = None
     st.session_state.scenario_parameters = {}
     st.session_state.scenario_snapshot_key = ""
+    st.session_state.feishu_pending_criteria = None
+    st.session_state.feishu_review_diffs = []
+    st.session_state.feishu_sync_note = ""
+    st.session_state.feishu_pull_note = ""
     st.session_state.criteria = []
     st.session_state.last_parse_note = tr(
         "方案原文已就绪，请进入标准审核生成结构化约束。",
@@ -565,11 +571,9 @@ def feishu_review_template(criteria: list[Criterion], trial_id: str) -> pd.DataF
         row = criterion_to_feishu_fields(trial_id, criterion)
         row.update(
             {
-                "审核状态": "需专家复核"
-                if criterion.execution_status == "human_review"
-                else "待审核",
-                "审核人": "",
-                "修改意见": "",
+                "审核状态": REVIEW_STATUS_TO_FEISHU[criterion.review_status],
+                "审核人": criterion.reviewer,
+                "修改意见": criterion.review_comment,
                 "审核后指标": criterion.field or "",
                 "审核后运算符": OPERATOR_LABELS_ZH.get(criterion.operator, criterion.operator),
                 "审核后阈值": json.dumps(criterion.value, ensure_ascii=False),
@@ -646,6 +650,23 @@ def render_feishu_review_panel() -> None:
                     records,
                     st.session_state.source.identifier,
                 )
+                current_ids = {item.criterion_id for item in st.session_state.criteria}
+                remote_ids = {
+                    str((record.get("fields") or {}).get("标准编号", "")).upper()
+                    for record in trial_records
+                    if (record.get("fields") or {}).get("标准编号")
+                }
+                matched_count = len(current_ids & remote_ids)
+                unmatched_count = len(remote_ids - current_ids)
+                status_counts = Counter(
+                    str((record.get("fields") or {}).get("审核状态", "未设置"))
+                    for record in trial_records
+                )
+                confirmed_count = status_counts.get("已确认", 0)
+                st.session_state.feishu_pull_note = tr(
+                    f"飞书返回 {len(trial_records)} 条当前试验记录，与当前 {len(current_ids)} 条标准匹配 {matched_count} 条；已确认 {confirmed_count} 条，未匹配历史记录 {unmatched_count} 条。",
+                    f"Feishu returned {len(trial_records)} record(s) for this trial; {matched_count} matched the {len(current_ids)} current constraints, {confirmed_count} were confirmed, and {unmatched_count} historical record(s) did not match.",
+                )
                 if trial_records:
                     reviewed, diffs = apply_reviewed_records(
                         st.session_state.criteria,
@@ -687,6 +708,8 @@ def render_feishu_review_panel() -> None:
 
     if st.session_state.feishu_sync_note:
         st.caption(st.session_state.feishu_sync_note)
+    if st.session_state.feishu_pull_note:
+        st.caption(st.session_state.feishu_pull_note)
 
 
 def page_header(title: str, subtitle: str, kicker: str) -> None:

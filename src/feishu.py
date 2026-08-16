@@ -96,6 +96,15 @@ EXECUTION_TO_FEISHU = {
     "automated": "自动规则",
     "human_review": "人工复核",
 }
+REVIEW_STATUS_TO_FEISHU = {
+    "pending": "待审核",
+    "confirmed": "已确认",
+    "changes_requested": "需修改",
+    "expert_review": "需专家复核",
+}
+FEISHU_TO_REVIEW_STATUS = {
+    value: key for key, value in REVIEW_STATUS_TO_FEISHU.items()
+}
 
 SYSTEM_FIELD_NAMES = {
     "同步键",
@@ -192,6 +201,22 @@ def _select_value(value: Any) -> str:
     return str(value or "")
 
 
+def _reviewer_value(value: Any) -> str:
+    """Normalize Feishu person/text cells into a readable reviewer string."""
+
+    values = value if isinstance(value, list) else [value]
+    names: list[str] = []
+    for item in values:
+        if isinstance(item, dict):
+            name = item.get("name") or item.get("en_name") or item.get("id")
+        else:
+            name = item
+        normalized = str(name or "").strip()
+        if normalized:
+            names.append(normalized)
+    return ", ".join(names)
+
+
 def _coerce_review_value(raw: Any, original: Any) -> Any:
     if raw in (None, ""):
         return original
@@ -226,8 +251,43 @@ def apply_reviewed_records(
             output.append(criterion.model_copy(deep=True))
             continue
         fields = _record_fields(record)
-        review_status = _select_value(fields.get("审核状态"))
+        review_status = _select_value(fields.get("审核状态")).strip()
         updated = criterion.model_copy(deep=True)
+        normalized_status = FEISHU_TO_REVIEW_STATUS.get(review_status)
+        if normalized_status and normalized_status != updated.review_status:
+            diffs.append(
+                {
+                    "标准编号": criterion.criterion_id,
+                    "字段": "审核状态",
+                    "原值": REVIEW_STATUS_TO_FEISHU[updated.review_status],
+                    "审核值": review_status,
+                }
+            )
+            updated.review_status = normalized_status
+
+        reviewer = _reviewer_value(fields.get("审核人"))
+        if reviewer and reviewer != updated.reviewer:
+            diffs.append(
+                {
+                    "标准编号": criterion.criterion_id,
+                    "字段": "审核人",
+                    "原值": updated.reviewer,
+                    "审核值": reviewer,
+                }
+            )
+            updated.reviewer = reviewer
+
+        review_comment = _select_value(fields.get("修改意见")).strip()
+        if review_comment != updated.review_comment:
+            diffs.append(
+                {
+                    "标准编号": criterion.criterion_id,
+                    "字段": "修改意见",
+                    "原值": updated.review_comment,
+                    "审核值": review_comment,
+                }
+            )
+            updated.review_comment = review_comment
 
         if review_status == "需专家复核":
             if updated.execution_status != "human_review":
@@ -240,11 +300,11 @@ def apply_reviewed_records(
                     }
                 )
             updated.execution_status = "human_review"
-            output.append(updated)
+            output.append(Criterion.model_validate(updated.model_dump()))
             continue
 
-        if review_status != "已确认":
-            output.append(updated)
+        if review_status not in {"已确认", "需修改"}:
+            output.append(Criterion.model_validate(updated.model_dump()))
             continue
 
         proposed = {

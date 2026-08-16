@@ -53,6 +53,11 @@ class Criterion(BaseModel):
     applicability: dict[str, Any] = Field(default_factory=dict)
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     execution_status: ExecutionStatus = ExecutionStatus.AUTOMATED
+    review_status: Literal[
+        "pending", "confirmed", "changes_requested", "expert_review"
+    ] = "pending"
+    reviewer: str = ""
+    review_comment: str = ""
     note: str = ""
 
     @field_validator("criterion_id")
