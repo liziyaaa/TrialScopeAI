@@ -1,0 +1,13 @@
+patient_id,age,sex,informed_consent_confirmed
+MISS-001,21,female,True
+MISS-002,26,male,True
+MISS-003,31,female,True
+MISS-004,36,male,True
+MISS-005,41,female,True
+MISS-006,46,male,True
+MISS-007,51,female,True
+MISS-008,56,male,False
+MISS-009,61,female,True
+MISS-010,66,male,True
+MISS-011,71,female,True
+MISS-012,76,male,True

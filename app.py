@@ -1849,6 +1849,31 @@ def page_screening() -> None:
             mime="text/csv",
             use_container_width=True,
         )
+        with st.expander(
+            tr("没有候选数据？下载 4 组测试队列", "No cohort data? Download four test cohorts"),
+            expanded=False,
+        ):
+            st.caption(tr(
+                "以下均为虚构记录，只用于测试完整数据、低风险、缺失字段和边界值四类路径；不会自动载入当前研究。",
+                "These fictional records cover complete mixed, low-risk, missing-field and boundary-value paths. They are never loaded automatically.",
+            ))
+            sample_specs = [
+                ("cohort_01_complete_mixed.csv", tr("01 · 完整混合队列", "01 · Complete mixed")),
+                ("cohort_02_low_risk.csv", tr("02 · 低风险队列", "02 · Low risk")),
+                ("cohort_03_missing_fields.csv", tr("03 · 缺失字段队列", "03 · Missing fields")),
+                ("cohort_04_boundary_values.csv", tr("04 · 边界值队列", "04 · Boundary values")),
+            ]
+            sample_columns = st.columns(4, gap="small")
+            for sample_column, (file_name, label) in zip(sample_columns, sample_specs):
+                sample_path = Path(__file__).parent / "sample_data" / file_name
+                sample_column.download_button(
+                    label,
+                    data=sample_path.read_bytes(),
+                    file_name=file_name,
+                    mime="text/csv",
+                    use_container_width=True,
+                    key=f"download_{file_name}",
+                )
         uploaded_cohort = st.file_uploader(
             tr("上传候选队列 CSV", "Upload cohort CSV"),
             type=["csv"],

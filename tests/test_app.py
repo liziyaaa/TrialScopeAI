@@ -52,6 +52,11 @@ def test_screening_page_works_without_api_key():
     prepare_public_case(app, with_results=False)
     app.session_state["navigation"] = "患者预筛"
     app.run()
+    download_labels = [item.label for item in app.get("download_button")]
+    assert "01 · 完整混合队列" in download_labels
+    assert "02 · 低风险队列" in download_labels
+    assert "03 · 缺失字段队列" in download_labels
+    assert "04 · 边界值队列" in download_labels
     next(item for item in app.button if item.label == "运行方案约束仿真").click().run()
     assert not app.exception
     values = [item.value for item in app.metric]

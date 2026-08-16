@@ -1,0 +1,13 @@
+patient_id,age,sex,copd_diagnosis,smoking_pack_years,post_bd_fev1_pct_predicted,post_bd_fev1_liters,post_bd_fev1_fvc,spirometry_reproducible,contraception_confirmed,informed_consent_confirmed,visit_adherence_confirmed,severe_comorbidity_concern,other_significant_respiratory_disease,days_since_copd_exacerbation,oxygen_hours_per_day,days_since_respiratory_infection,days_since_systemic_steroids,malignancy_within_5y,qtc_ms,bladder_outflow_obstruction_within_6m,narrow_angle_glaucoma,aerosol_medication_hypersensitivity,substance_abuse_within_3m,psychiatric_completion_concern,investigational_drug_within_30d,prior_sun101,study_drug_class_hypersensitivity,disease_severity
+EDGE-001,17,female,False,9,81,2.51,0.701,True,True,True,True,False,False,31,0,15,31,False,449,False,False,False,False,False,False,False,False,mild
+EDGE-002,18,male,False,10,80,2.50,0.700,True,True,True,True,False,False,30,1,14,30,False,450,False,False,False,False,False,False,False,False,mild
+EDGE-003,19,female,True,11,79,2.49,0.699,True,True,True,True,False,False,29,2,13,29,False,451,False,False,False,False,False,False,False,False,moderate
+EDGE-004,39,male,True,19,61,2.01,0.601,True,True,True,True,False,False,15,11,8,15,False,459,False,False,False,False,False,False,False,False,moderate
+EDGE-005,40,female,True,20,60,2.00,0.600,True,True,True,True,False,False,14,12,7,14,False,460,False,False,False,False,False,False,False,False,moderate
+EDGE-006,41,male,True,21,59,1.99,0.599,True,True,True,True,False,False,13,13,6,13,False,461,False,False,False,False,False,False,False,False,severe
+EDGE-007,64,female,True,29,51,1.51,0.501,True,True,True,True,False,False,8,14,5,8,False,469,False,False,False,False,False,False,False,False,severe
+EDGE-008,65,male,True,30,50,1.50,0.500,True,True,True,True,False,False,7,15,4,7,False,470,False,False,False,False,False,False,False,False,severe
+EDGE-009,66,female,True,31,49,1.49,0.499,True,True,True,True,False,False,6,16,3,6,False,471,False,False,False,False,False,False,False,False,severe
+EDGE-010,74,male,True,39,41,1.01,0.401,True,True,True,True,False,False,2,23,1,2,False,479,False,False,False,False,False,False,False,False,severe
+EDGE-011,75,female,True,40,40,1.00,0.400,True,True,True,True,False,False,1,24,0,1,False,480,False,False,False,False,False,False,False,False,severe
+EDGE-012,76,male,True,41,39,0.99,0.399,True,True,True,True,True,True,0,25,0,0,True,481,True,True,True,True,True,True,True,True,severe

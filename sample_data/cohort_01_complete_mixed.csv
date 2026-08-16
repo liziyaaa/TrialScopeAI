@@ -1,0 +1,13 @@
+patient_id,age,sex,copd_diagnosis,smoking_pack_years,post_bd_fev1_pct_predicted,post_bd_fev1_liters,post_bd_fev1_fvc,spirometry_reproducible,contraception_confirmed,informed_consent_confirmed,visit_adherence_confirmed,severe_comorbidity_concern,other_significant_respiratory_disease,days_since_copd_exacerbation,oxygen_hours_per_day,days_since_respiratory_infection,days_since_systemic_steroids,malignancy_within_5y,qtc_ms,bladder_outflow_obstruction_within_6m,narrow_angle_glaucoma,aerosol_medication_hypersensitivity,substance_abuse_within_3m,psychiatric_completion_concern,investigational_drug_within_30d,prior_sun101,study_drug_class_hypersensitivity,disease_severity
+MIX-001,22,female,False,0,88,3.10,0.82,True,True,True,True,False,False,180,0,90,120,False,410,False,False,False,False,False,False,False,False,mild
+MIX-002,29,male,False,2,84,3.45,0.80,True,True,True,True,False,False,140,0,75,100,False,418,False,False,False,False,False,False,False,False,mild
+MIX-003,35,female,False,0,79,2.88,0.77,True,True,True,True,False,False,110,0,61,90,False,425,False,False,False,False,False,False,False,False,moderate
+MIX-004,41,male,True,24,63,2.20,0.66,True,True,True,True,False,False,75,2,45,60,False,432,False,False,False,False,False,False,False,False,moderate
+MIX-005,47,female,False,5,76,2.65,0.74,True,True,True,True,True,False,95,0,50,72,False,440,False,False,False,False,False,False,False,False,moderate
+MIX-006,52,male,True,32,58,1.95,0.61,True,True,True,True,False,True,42,6,30,40,False,448,False,False,False,False,False,False,False,False,severe
+MIX-007,58,female,False,0,81,2.72,0.78,True,False,True,True,False,False,150,0,80,95,False,452,False,False,False,False,False,False,False,False,mild
+MIX-008,63,male,True,40,51,1.62,0.55,True,True,False,True,False,False,20,10,12,18,False,461,False,False,False,False,False,False,False,False,severe
+MIX-009,67,female,False,0,73,2.31,0.71,True,True,True,False,False,False,88,0,37,55,True,469,False,False,False,False,False,False,False,False,moderate
+MIX-010,71,male,True,52,45,1.40,0.49,False,True,True,True,True,True,8,18,6,10,False,482,True,True,False,False,False,True,False,False,severe
+MIX-011,38,female,False,0,86,3.02,0.81,True,True,True,True,False,False,130,0,70,84,False,416,False,False,True,False,False,False,False,False,mild
+MIX-012,45,male,False,8,78,2.58,0.75,True,True,True,True,False,False,100,0,55,66,False,435,False,False,False,True,True,False,False,False,moderate
