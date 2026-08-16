@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from collections import Counter
-from datetime import datetime, time as datetime_time
+from datetime import datetime
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -38,14 +38,11 @@ from src.feishu import (
     records_for_trial,
 )
 from src.config import (
-    DATA_DIR,
     DEEPSEEK_DEFAULT_MODEL,
     MAX_LIVE_CALLS_PER_SESSION,
-    OUTPUT_DIR,
 )
 from src.llm_parser import (
     LLMParseError,
-    load_cached_demo_criteria,
     parse_with_deepseek,
     split_for_llm,
 )
@@ -77,15 +74,26 @@ APP_CSS = (Path(__file__).parent / "assets" / "styles.css").read_text(encoding="
 st.markdown(f"<style>{APP_CSS}</style>", unsafe_allow_html=True)
 
 
-@st.cache_data
-def load_demo_source() -> TrialSource:
-    payload = json.loads((DATA_DIR / "golden4_trial.json").read_text(encoding="utf-8"))
-    return TrialSource.model_validate(payload)
+def empty_source() -> TrialSource:
+    """Return a neutral source object for a new, unconfigured workspace."""
+
+    return TrialSource(
+        source_type="text",
+        identifier="",
+        title="",
+        source_reference="",
+        criteria_text="",
+        metadata={"empty_workspace": True},
+    )
 
 
-@st.cache_data
-def load_patients() -> pd.DataFrame:
-    return pd.read_csv(DATA_DIR / "synthetic_patients.csv")
+def has_active_study() -> bool:
+    source = st.session_state.get("source")
+    return bool(
+        isinstance(source, TrialSource)
+        and source.identifier.strip()
+        and not source.metadata.get("empty_workspace")
+    )
 
 
 @st.cache_data(show_spinner=False)
@@ -114,16 +122,17 @@ def bool_setting(name: str, default: bool = True) -> bool:
 
 
 def init_state() -> None:
-    demo_source = load_demo_source()
+    source = empty_source()
     defaults = {
         "language": "zh",
         "navigation": "项目说明",
-        "import_method": "预置研究",
+        "import_method": "NCT 编号",
         "selected_patient_id": None,
-        "source": demo_source,
-        "criteria_text": demo_source.criteria_text,
-        "criteria": load_cached_demo_criteria(),
-        "patients": load_patients(),
+        "source": source,
+        "criteria_text": "",
+        "criteria": [],
+        "patients": pd.DataFrame(),
+        "cohort_file_name": "",
         "results": None,
         "live_calls": 0,
         "scenario_comparison": None,
@@ -133,19 +142,20 @@ def init_state() -> None:
         "feishu_pending_criteria": None,
         "feishu_review_diffs": [],
         "feishu_sync_note": "",
-        "last_parse_note": "已载入 GOLDEN-4 结构化标准。",
+        "last_parse_note": "尚未生成结构化标准。",
         "scroll_to_top": False,
         "history_workspaces": [],
         "history_browser_payload": None,
         "history_dirty": False,
         "history_write_revision": 0,
         "history_storage_available": True,
+        "history_v1_removed": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
-    if st.session_state.get("import_method") == "内置演示":
-        st.session_state.import_method = "预置研究"
+    if st.session_state.get("import_method") not in {"NCT 编号", "粘贴文本", "上传 PDF"}:
+        st.session_state.import_method = "NCT 编号"
 
 
 def set_source(source: TrialSource, criteria_text: str | None = None) -> None:
@@ -153,23 +163,18 @@ def set_source(source: TrialSource, criteria_text: str | None = None) -> None:
     st.session_state.source = source
     st.session_state.criteria_text = text
     st.session_state.criteria_editor = text
+    st.session_state.patients = pd.DataFrame()
+    st.session_state.cohort_file_name = ""
     st.session_state.results = None
     st.session_state.scenario_comparison = None
     st.session_state.scenario_results = None
     st.session_state.scenario_parameters = {}
     st.session_state.scenario_snapshot_key = ""
-    if source.identifier == "NCT02347774":
-        st.session_state.criteria = load_cached_demo_criteria()
-        st.session_state.last_parse_note = tr(
-            "该案例可直接使用审核后的缓存标准，也可重新调用 DeepSeek。",
-            "The reviewed reference rules are ready; live semantic extraction remains optional.",
-        )
-    else:
-        st.session_state.criteria = []
-        st.session_state.last_parse_note = tr(
-            "请进入“标准解析”步骤生成结构化标准。",
-            "Continue to rule review to generate structured constraints.",
-        )
+    st.session_state.criteria = []
+    st.session_state.last_parse_note = tr(
+        "方案原文已就绪，请进入标准审核生成结构化约束。",
+        "The source is ready. Continue to rule review to generate structured constraints.",
+    )
     record_workspace_event(
         tr("方案已导入", "Protocol imported"),
         source.source_type,
@@ -184,7 +189,8 @@ def tr(zh: str, en: str) -> str:
     return en if current_language() == "en" else zh
 
 
-HISTORY_STORAGE_KEY = "trialscopeai.workspace-history.v1"
+HISTORY_STORAGE_KEY = "trialscopeai.workspace-history.v2"
+LEGACY_HISTORY_STORAGE_KEY = "trialscopeai.workspace-history.v1"
 
 
 def hydrate_browser_history() -> LocalStorage | None:
@@ -194,6 +200,13 @@ def hydrate_browser_history() -> LocalStorage | None:
         return None
     try:
         storage = LocalStorage(key="trialscope_browser_storage")
+        if not st.session_state.history_v1_removed:
+            if storage.getItem(LEGACY_HISTORY_STORAGE_KEY) is not None:
+                storage.eraseItem(
+                    LEGACY_HISTORY_STORAGE_KEY,
+                    key="trialscope_remove_legacy_history",
+                )
+            st.session_state.history_v1_removed = True
         payload = storage.getItem(HISTORY_STORAGE_KEY)
         if (
             payload is not None
@@ -212,7 +225,7 @@ def hydrate_browser_history() -> LocalStorage | None:
 def record_workspace_event(action: str, detail: str = "") -> None:
     """Save the current protocol state without patient-level records."""
 
-    if "source" not in st.session_state:
+    if "source" not in st.session_state or not has_active_study():
         return
     snapshot = build_workspace_snapshot(
         source=st.session_state.source,
@@ -275,9 +288,9 @@ def restore_history_workspace(workspace_id: str) -> None:
     st.session_state.criteria_text = record.get("criteria_text") or source.criteria_text
     st.session_state.criteria_editor = st.session_state.criteria_text
     st.session_state.criteria = criteria
-    st.session_state.results = (
-        match_dataframe(st.session_state.patients, criteria) if criteria else None
-    )
+    st.session_state.patients = pd.DataFrame()
+    st.session_state.cohort_file_name = ""
+    st.session_state.results = None
     st.session_state.scenario_parameters = dict(record.get("scenario_parameters") or {})
     st.session_state.scenario_comparison = None
     st.session_state.scenario_results = None
@@ -517,7 +530,7 @@ def evidence_message(item: Any) -> str:
         return "A required field is unavailable; the record remains unresolved."
     if item.status == "review":
         return "This statement requires clinical judgement and is not auto-executed."
-    return "The constraint does not apply to this synthetic candidate."
+    return "The constraint does not apply to this candidate record."
 
 
 def results_to_display_frame(results: list[Any]) -> pd.DataFrame:
@@ -676,13 +689,6 @@ def render_feishu_review_panel() -> None:
         st.caption(st.session_state.feishu_sync_note)
 
 
-def ensure_results() -> None:
-    if st.session_state.results is None and st.session_state.criteria:
-        st.session_state.results = match_dataframe(
-            st.session_state.patients, st.session_state.criteria
-        )
-
-
 def page_header(title: str, subtitle: str, kicker: str) -> None:
     st.markdown(
         f"""
@@ -694,6 +700,37 @@ def page_header(title: str, subtitle: str, kicker: str) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def require_active_study() -> bool:
+    """Render a consistent formal empty state until a protocol is imported."""
+
+    if has_active_study():
+        return True
+    with st.container(key="no_active_study"):
+        st.markdown(
+            f"<div class='ts-empty-mark'>01</div>"
+            f"<h2>{escape(tr('尚未建立研究工作区', 'No study workspace is active'))}</h2>"
+            f"<p>{escape(tr('请先导入 NCT 研究、标准原文或文字型 PDF。方案确认后，审核、协作和分析模块会自动承接当前研究。', 'Import an NCT study, eligibility text or a searchable PDF. Review, collaboration and analysis modules will then use that study workspace.'))}</p>",
+            unsafe_allow_html=True,
+        )
+        action, history, spacer = st.columns([1.15, 1.05, 3.4])
+        action.button(
+            tr("导入研究方案", "Import protocol"),
+            key="empty_state_import",
+            type="primary",
+            use_container_width=True,
+            on_click=go_to,
+            args=("试验 / PDF 导入",),
+        )
+        history.button(
+            tr("查看研究历史", "View history"),
+            key="empty_state_history",
+            use_container_width=True,
+            on_click=go_to,
+            args=("历史记录",),
+        )
+    return False
 
 
 def section_title(title: str) -> None:
@@ -731,6 +768,13 @@ def source_summary() -> None:
     identifier = escape(source.identifier)
     title = escape(source.title)
     reference = escape(source.source_reference)
+    source_type_label = {
+        "clinicaltrials": "ClinicalTrials.gov",
+        "pdf": tr("PDF 方案", "PDF protocol"),
+        "text": tr("录入原文", "Entered source text"),
+        "demo": tr("公开来源", "Public source"),
+    }.get(source.source_type, source.source_type)
+    status = str(source.metadata.get("overall_status") or tr("已导入", "Imported"))
     st.markdown(
         f"""
         <div class="ts-study-card">
@@ -740,9 +784,8 @@ def source_summary() -> None:
                 <div class="ts-study-meta">{escape(tr('来源', 'Source'))}: {reference}</div>
             </div>
             <div class="ts-study-tags">
-                <span class="ts-tag">{escape(tr('Ⅲ期', 'Phase III'))}</span>
-                <span class="ts-tag">COPD</span>
-                <span class="ts-status ok">{escape(tr('公开方案', 'Public protocol'))}</span>
+                <span class="ts-tag">{escape(source_type_label)}</span>
+                <span class="ts-status ok">{escape(status)}</span>
             </div>
         </div>
         """,
@@ -789,48 +832,6 @@ def scroll_to_top_if_requested() -> None:
 
 def set_language(language: str) -> None:
     st.session_state.language = language
-
-
-SCENARIO_PRESETS = {
-    "baseline": {
-        "scenario_age_min": 40,
-        "scenario_pack_years": 10.0,
-        "scenario_fev1_pct": 80.0,
-        "scenario_fev1_liters": 0.7,
-        "scenario_ratio": 0.70,
-        "scenario_oxygen": 12.0,
-        "scenario_exacerbation_days": 42,
-        "scenario_infection_days": 42,
-    },
-    "expansion": {
-        "scenario_age_min": 35,
-        "scenario_pack_years": 5.0,
-        "scenario_fev1_pct": 85.0,
-        "scenario_fev1_liters": 0.6,
-        "scenario_ratio": 0.72,
-        "scenario_oxygen": 16.0,
-        "scenario_exacerbation_days": 28,
-        "scenario_infection_days": 28,
-    },
-    "focused": {
-        "scenario_age_min": 45,
-        "scenario_pack_years": 20.0,
-        "scenario_fev1_pct": 70.0,
-        "scenario_fev1_liters": 0.8,
-        "scenario_ratio": 0.65,
-        "scenario_oxygen": 8.0,
-        "scenario_exacerbation_days": 56,
-        "scenario_infection_days": 56,
-    },
-}
-
-
-def load_scenario_preset(preset: str) -> None:
-    st.session_state.update(SCENARIO_PRESETS[preset])
-    st.session_state.scenario_comparison = None
-    st.session_state.scenario_results = None
-    st.session_state.scenario_parameters = {}
-    st.session_state.scenario_snapshot_key = ""
 
 
 def choose_import_method(method: str) -> None:
@@ -889,29 +890,30 @@ def page_home() -> None:
             )
             primary, secondary, spacer = st.columns([1.18, 1.08, 1.35], gap="small")
             primary.button(
-                tr("进入研究工作台", "Open workspace"),
+                tr("导入研究方案", "Import protocol"),
                 key="landing_open_workspace_primary",
                 type="primary",
                 use_container_width=True,
                 on_click=go_to,
-                args=("研究工作台",),
+                args=("试验 / PDF 导入",),
             )
             secondary.button(
-                tr("导入新方案", "Import protocol"),
+                tr("查看工作区", "View workspace"),
                 key="landing_import_protocol",
                 use_container_width=True,
                 on_click=go_to,
-                args=("试验 / PDF 导入",),
+                args=("研究工作台",),
             )
         with flow_col:
             st.markdown(
                 f"""
                 <div class="ts-landing-flow">
-                    <div class="ts-flow-head"><span>{escape(tr('当前工作流', 'ACTIVE WORKFLOW'))}</span><b>NCT02347774 · GOLDEN-4</b></div>
+                    <div class="ts-flow-head"><span>{escape(tr('公开案例', 'PUBLIC CASE'))}</span><b>NCT02347774 · GOLDEN-4</b></div>
                     <div class="ts-flow-row"><span>01</span><div><b>{escape(tr('方案进入', 'Protocol intake'))}</b><small>{escape(tr('NCT、原文或文字型 PDF', 'NCT, source text or searchable PDF'))}</small></div><em>{escape(tr('已就绪', 'Ready'))}</em></div>
                     <div class="ts-flow-row"><span>02</span><div><b>{escape(tr('标准审核', 'Constraint review'))}</b><small>{escape(tr('原文、字段、阈值和时间窗', 'Source, field, threshold and time window'))}</small></div><em>27</em></div>
-                    <div class="ts-flow-row"><span>03</span><div><b>{escape(tr('队列评估', 'Cohort evaluation'))}</b><small>{escape(tr('逐条证据与主要限制因素', 'Evidence trail and leading constraints'))}</small></div><em>500</em></div>
-                    <div class="ts-flow-row"><span>04</span><div><b>{escape(tr('情景比较', 'Scenario comparison'))}</b><small>{escape(tr('规模变化与人群构成权衡', 'Scale and composition trade-offs'))}</small></div><em>{escape(tr('可比较', 'Compare'))}</em></div>
+                    <div class="ts-flow-row"><span>03</span><div><b>{escape(tr('飞书协同审核', 'Feishu collaborative review'))}</b><small>{escape(tr('负责人、状态、意见和版本留痕', 'Owner, status, comments and version trail'))}</small></div><em>{escape(tr('可回读', 'Synced'))}</em></div>
+                    <div class="ts-flow-row"><span>04</span><div><b>{escape(tr('队列评估', 'Cohort evaluation'))}</b><small>{escape(tr('逐条证据与主要限制因素', 'Evidence trail and leading constraints'))}</small></div><em>500</em></div>
+                    <div class="ts-flow-row"><span>05</span><div><b>{escape(tr('情景比较', 'Scenario comparison'))}</b><small>{escape(tr('规模变化与人群构成权衡', 'Scale and composition trade-offs'))}</small></div><em>{escape(tr('可比较', 'Compare'))}</em></div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -926,7 +928,7 @@ def page_home() -> None:
         </div>
         <div class="ts-capability-grid">
             <article><span>01</span><h3>{escape(tr('结构化方案约束', 'Structured constraints'))}</h3><p>{escape(tr('保留标准原文，同时整理字段、运算符、阈值、单位和时间窗。', 'Retain the source statement while organizing fields, operators, thresholds, units and time windows.'))}</p></article>
-            <article><span>02</span><h3>{escape(tr('医学审核与协作', 'Clinical review'))}</h3><p>{escape(tr('区分可执行规则与人工判断项，记录修改意见、审核状态和版本。', 'Separate executable rules from clinical judgement and retain review status, comments and versions.'))}</p></article>
+            <article><span>02</span><h3>{escape(tr('医学审核与飞书协作', 'Clinical and Feishu review'))}</h3><p>{escape(tr('区分可执行规则与人工判断项，将负责人、审核状态、修改意见和版本同步到飞书。', 'Separate executable rules from clinical judgement and synchronize ownership, review status, comments and versions to Feishu.'))}</p></article>
             <article><span>03</span><h3>{escape(tr('队列约束分析', 'Cohort constraint analysis'))}</h3><p>{escape(tr('查看筛选路径、主要排除因素、缺失信息和每位候选者的证据链。', 'Inspect the screening path, leading blockers, missing information and candidate-level evidence.'))}</p></article>
             <article><span>04</span><h3>{escape(tr('方案情景比较', 'Protocol scenario comparison'))}</h3><p>{escape(tr('比较参数变化前后的候选规模和人群构成，为跨团队讨论提供量化依据。', 'Compare candidate scale and cohort composition before and after parameter changes.'))}</p></article>
         </div>
@@ -939,14 +941,15 @@ def page_home() -> None:
         <div class="ts-landing-workflow">
             <div class="ts-workflow-copy">
                 <span>{escape(tr('标准工作流', 'WORKFLOW'))}</span>
-                <h2>{escape(tr('四个阶段完成一次可行性评估', 'Four stages for a feasibility assessment'))}</h2>
+                <h2>{escape(tr('五个阶段完成一次可行性评估', 'Five stages for a feasibility assessment'))}</h2>
                 <p>{escape(tr('每个阶段都有明确的输入、输出和人工确认点；历史工作区会保留最近进度。', 'Each stage has a clear input, output and review point. Workspace history retains the latest progress.'))}</p>
             </div>
             <div class="ts-workflow-steps">
                 <div><b>01</b><span>{escape(tr('导入方案', 'Import'))}</span><small>{escape(tr('核对标准原文', 'Confirm source text'))}</small></div>
-                <div><b>02</b><span>{escape(tr('审核标准', 'Review'))}</span><small>{escape(tr('确认可执行规则', 'Approve constraints'))}</small></div>
-                <div><b>03</b><span>{escape(tr('评估队列', 'Evaluate'))}</span><small>{escape(tr('定位限制因素', 'Identify blockers'))}</small></div>
-                <div><b>04</b><span>{escape(tr('比较情景', 'Compare'))}</span><small>{escape(tr('讨论规模与构成', 'Discuss trade-offs'))}</small></div>
+                <div><b>02</b><span>{escape(tr('结构化标准', 'Structure'))}</span><small>{escape(tr('确认可执行规则', 'Author constraints'))}</small></div>
+                <div><b>03</b><span>{escape(tr('飞书审核', 'Sign off'))}</span><small>{escape(tr('跨团队确认留痕', 'Review in Feishu'))}</small></div>
+                <div><b>04</b><span>{escape(tr('评估队列', 'Evaluate'))}</span><small>{escape(tr('定位限制因素', 'Identify blockers'))}</small></div>
+                <div><b>05</b><span>{escape(tr('比较情景', 'Compare'))}</span><small>{escape(tr('讨论规模与构成', 'Discuss trade-offs'))}</small></div>
             </div>
         </div>
         """,
@@ -974,6 +977,10 @@ def page_home() -> None:
         ("4", tr("类队列判断状态", "cohort decision states")),
         ("100%", tr("标准来源可追溯", "source traceability")),
     ]
+    st.markdown(
+        f"<div class='ts-case-evidence-label'>{escape(tr('GOLDEN-4 公开案例的系统输出', 'SYSTEM OUTPUT FOR THE GOLDEN-4 PUBLIC CASE'))}</div>",
+        unsafe_allow_html=True,
+    )
     evidence_cols = st.columns(4, gap="small")
     for column, (value, label) in zip(evidence_cols, evidence):
         column.markdown(
@@ -984,22 +991,95 @@ def page_home() -> None:
     with st.container(key="landing_final_cta"):
         text_col, action_col = st.columns([3.6, 1.1], vertical_alignment="center")
         text_col.markdown(
-            f"<h2>{escape(tr('从当前研究开始', 'Continue with the active study'))}</h2>"
-            f"<p>{escape(tr('打开 GOLDEN-4 工作区，查看完整的标准、队列和情景分析。', 'Open the GOLDEN-4 workspace to review constraints, cohort results and scenarios.'))}</p>",
+            f"<h2>{escape(tr('建立一个干净的研究工作区', 'Start a clean study workspace'))}</h2>"
+            f"<p>{escape(tr('从 NCT 编号、标准原文或文字型 PDF 开始，系统不会自动带入任何案例数据。', 'Begin with an NCT ID, eligibility text or searchable PDF. No case data is preloaded into the workspace.'))}</p>",
             unsafe_allow_html=True,
         )
         action_col.button(
-            tr("打开工作台", "Open workspace"),
+            tr("导入研究方案", "Import protocol"),
             key="landing_open_workspace_final",
             type="primary",
             use_container_width=True,
             on_click=go_to,
-            args=("研究工作台",),
+            args=("试验 / PDF 导入",),
         )
 
 
 def page_workspace() -> None:
-    ensure_results()
+    if not has_active_study():
+        page_header(
+            tr("研究工作台", "Study workspace"),
+            tr(
+                "研究建立后，这里将集中呈现方案约束、队列状态、主要限制因素和人群构成。",
+                "Once a study is created, this workspace will consolidate protocol constraints, cohort status, leading blockers and cohort composition.",
+            ),
+            tr("研究总览", "STUDY OVERVIEW"),
+        )
+        require_active_study()
+        return
+    if not st.session_state.criteria:
+        page_header(
+            tr("研究工作台", "Study workspace"),
+            tr("方案已经进入工作区，下一步是生成并审核结构化标准。", "The protocol is in the workspace. Generate and review its structured constraints next."),
+            tr("研究进度", "STUDY PROGRESS"),
+        )
+        source_summary()
+        with st.container(key="workspace_stage_state"):
+            st.markdown(
+                f"<span>01 / 04</span><h2>{escape(tr('方案原文已就绪', 'Protocol source ready'))}</h2>"
+                f"<p>{escape(tr('标准审核、协作确认、队列评估和情景分析将在完成结构化后依次开放。', 'Rule review, collaboration, cohort evaluation and scenario analysis will open as the study progresses.'))}</p>",
+                unsafe_allow_html=True,
+            )
+            st.button(
+                tr("进入标准审核", "Open rule review"),
+                key="workspace_to_review",
+                type="primary",
+                on_click=go_to,
+                args=("标准解析",),
+            )
+        return
+    if st.session_state.patients.empty:
+        page_header(
+            tr("研究工作台", "Study workspace"),
+            tr("结构化标准已进入当前研究，导入候选队列后即可运行约束评估。", "Structured constraints are ready. Import a cohort to begin constraint evaluation."),
+            tr("研究进度", "STUDY PROGRESS"),
+        )
+        source_summary()
+        with st.container(key="workspace_stage_state"):
+            st.markdown(
+                f"<span>02 / 04</span><h2>{escape(tr('等待候选队列', 'Cohort data required'))}</h2>"
+                f"<p>{escape(tr(f'当前研究已有 {len(st.session_state.criteria)} 条结构化标准。系统不会自动带入案例队列。', f'{len(st.session_state.criteria)} structured constraints are ready. The system does not preload a case cohort.'))}</p>",
+                unsafe_allow_html=True,
+            )
+            st.button(
+                tr("导入候选队列", "Import cohort"),
+                key="workspace_to_cohort",
+                type="primary",
+                on_click=go_to,
+                args=("患者预筛",),
+            )
+        return
+    if st.session_state.results is None:
+        page_header(
+            tr("研究工作台", "Study workspace"),
+            tr("方案标准与候选队列均已就绪，等待运行规则评估。", "The constraints and cohort are ready for rule evaluation."),
+            tr("研究进度", "STUDY PROGRESS"),
+        )
+        source_summary()
+        with st.container(key="workspace_stage_state"):
+            st.markdown(
+                f"<span>03 / 04</span><h2>{escape(tr('队列等待评估', 'Cohort ready for evaluation'))}</h2>"
+                f"<p>{escape(tr(f'已载入 {len(st.session_state.patients)} 条候选记录，尚未生成判断结果。', f'{len(st.session_state.patients)} cohort rows are loaded; no results have been generated yet.'))}</p>",
+                unsafe_allow_html=True,
+            )
+            st.button(
+                tr("运行队列评估", "Run cohort evaluation"),
+                key="workspace_run_cohort",
+                type="primary",
+                on_click=go_to,
+                args=("患者预筛",),
+            )
+        return
     results = st.session_state.results or []
     patients = st.session_state.patients
     criteria = st.session_state.criteria
@@ -1026,7 +1106,7 @@ def page_workspace() -> None:
     cols = st.columns(5)
     metrics = [
         (tr("方案约束", "Protocol constraints"), str(len(criteria)), tr("已结构化", "Structured")),
-        (tr("评估队列", "Evaluated cohort"), str(len(patients)), tr("合成记录", "Synthetic records")),
+        (tr("评估队列", "Evaluated cohort"), str(len(patients)), tr("已导入记录", "Imported records")),
         (tr("规则符合", "Rule-eligible"), str(counts.get("eligible", 0)), f"{eligible_rate:.1f}%"),
         (tr("潜在候选", "Potential candidates"), str(potential), tr("含待医学复核", "Includes clinical review")),
         (tr("待处理", "Open workload"), str(unresolved), tr("信息补充或复核", "Data or review needed")),
@@ -1047,15 +1127,10 @@ def page_workspace() -> None:
         ]
     )
     funnel = build_funnel(patients, criteria)
-    funnel["stage"] = funnel["stage"].replace({"模拟符合或待复核": "规则符合或待复核"})
     if current_language() == "en":
         funnel["stage"] = funnel["stage"].replace({
             "候选队列": "Evaluated cohort",
-            "年龄与诊断": "Age and diagnosis",
-            "吸烟史": "Smoking exposure",
-            "肺功能": "Pulmonary function",
-            "近期事件": "Recent events",
-            "其他可执行排除项": "Other exclusions",
+            "其余可执行标准": "Remaining executable constraints",
             "规则符合或待复核": "Eligible or review",
         })
 
@@ -1121,27 +1196,30 @@ def page_workspace() -> None:
             st.markdown(f"<div class='ts-panel-title'>{escape(tr('人群构成对照', 'Cohort composition'))}</div>", unsafe_allow_html=True)
             representation = representation_table(patients, results)
             representation = representation[representation["metric"] != "平均年龄"].copy()
-            if current_language() == "en":
-                representation["group"] = representation["group"].replace({
-                    "候选队列": "Evaluated cohort",
-                    "模拟符合或待复核": "Eligible or review",
-                })
-                representation["metric"] = representation["metric"].replace({
-                    "女性占比": "Female",
-                    "65岁及以上占比": "Age 65+",
-                    "重度COPD占比": "Severe COPD",
-                })
-            composition_fig = px.bar(
-                representation,
-                x="metric",
-                y="value",
-                color="group",
-                barmode="group",
-                text_auto=".1f",
-                color_discrete_sequence=["#A7B5C0", "#2F7A73"],
-            )
-            composition_fig.update_yaxes(ticksuffix="%")
-            st.plotly_chart(style_figure(composition_fig, height=350), width="stretch", config={"displayModeBar": False})
+            if representation.empty:
+                st.info(tr("当前队列没有可用的人群构成字段。", "No cohort-composition fields are available."))
+            else:
+                if current_language() == "en":
+                    representation["group"] = representation["group"].replace({
+                        "候选队列": "Evaluated cohort",
+                        "规则符合或待复核": "Eligible or review",
+                    })
+                    representation["metric"] = representation["metric"].replace({
+                        "女性占比": "Female",
+                        "65岁及以上占比": "Age 65+",
+                        "重度疾病占比": "Severe disease",
+                    })
+                composition_fig = px.bar(
+                    representation,
+                    x="metric",
+                    y="value",
+                    color="group",
+                    barmode="group",
+                    text_auto=".1f",
+                    color_discrete_sequence=["#A7B5C0", "#2F7A73"],
+                )
+                composition_fig.update_yaxes(ticksuffix="%")
+                st.plotly_chart(style_figure(composition_fig, height=350), width="stretch", config={"displayModeBar": False})
 
     section_title(tr("关键标准明细", "Constraint register"))
     if not blockers.empty:
@@ -1164,7 +1242,7 @@ def page_workspace() -> None:
         )
 
     st.markdown(
-        f"<div class='ts-system-footnote'>{escape(tr('数据范围：公开试验方案与合成候选队列。页面结果用于方案评估和协作审核，不用于诊断或自动入组。', 'Data scope: public protocol plus a synthetic cohort. Results support protocol assessment and review; they are not used for diagnosis or automatic enrolment.'))}</div>",
+        f"<div class='ts-system-footnote'>{escape(tr('数据范围：当前研究方案与本会话导入的候选队列。结果用于方案评估和协作审核，不用于诊断或自动入组。', 'Data scope: the active protocol and cohort imported in this session. Results support protocol assessment and review; they are not used for diagnosis or automatic enrolment.'))}</div>",
         unsafe_allow_html=True,
     )
 
@@ -1190,6 +1268,7 @@ def page_history() -> None:
         tr("保存当前研究", "Save current study"),
         type="primary",
         use_container_width=True,
+        disabled=not has_active_study(),
     ):
         record_workspace_event(tr("手动保存工作区", "Workspace saved"))
         st.success(tr("当前进度已保存。", "Current progress saved."))
@@ -1310,12 +1389,11 @@ def page_import() -> None:
         "Each run uses one source. Review the extracted text before moving into rule authoring.",
     ))
     source_options = [
-        ("预置研究", "GOLDEN-4", tr("预置公开研究，可直接建立工作区", "A prepared public study for immediate use")),
         ("NCT 编号", tr("公开试验", "NCT record"), tr("从 ClinicalTrials.gov 获取标准", "Fetch public eligibility text")),
         ("粘贴文本", tr("标准原文", "Paste text"), tr("适合已有 Word 或网页文本", "For copied protocol sections")),
-        ("上传 PDF", tr("研究方案", "Searchable PDF"), tr("首版不处理扫描图像", "Text PDFs only; no OCR guessing")),
+        ("上传 PDF", tr("研究方案", "Searchable PDF"), tr("支持可检索文字的方案文件", "For protocols with searchable text")),
     ]
-    source_columns = st.columns(4)
+    source_columns = st.columns(3)
     for index, (method_name, title, hint) in enumerate(source_options):
         is_selected = st.session_state.import_method == method_name
         state = "selected" if is_selected else "idle"
@@ -1337,7 +1415,6 @@ def page_import() -> None:
 
     method = st.session_state.import_method
     method_display = {
-        "预置研究": tr("预置公开研究", "Prepared public study"),
         "NCT 编号": "ClinicalTrials.gov",
         "粘贴文本": tr("粘贴标准原文", "Pasted eligibility text"),
         "上传 PDF": tr("文字型 PDF", "Searchable PDF"),
@@ -1347,32 +1424,13 @@ def page_import() -> None:
         unsafe_allow_html=True,
     )
     with st.container(border=True, key="source_input_panel"):
-        if method == "预置研究":
-            left, right = st.columns([2, 1])
-            with left:
-                st.markdown("**GOLDEN-4（NCT02347774）**")
-                st.caption(tr(
-                    "COPD Ⅲ期公开试验，覆盖年龄、吸烟史、肺功能、用药和时间窗。",
-                    "A public Phase III COPD study with numeric, medication and time-window constraints.",
-                ))
-                if st.button(tr("载入 GOLDEN-4", "Load GOLDEN-4"), type="primary", use_container_width=True):
-                    set_source(load_demo_source())
-                    st.success(tr("研究已载入，请在下方核对原文。", "Study loaded. Review the source text below."))
-            with right:
-                pdf_path = OUTPUT_DIR / "pdf" / "golden4_demo_protocol.pdf"
-                st.download_button(
-                    tr("下载研究方案 PDF", "Download protocol PDF"),
-                    data=pdf_path.read_bytes(),
-                    file_name=pdf_path.name,
-                    mime="application/pdf",
-                    use_container_width=True,
-                )
-        elif method == "NCT 编号":
+        if method == "NCT 编号":
             st.markdown(tr("**输入公开试验编号**", "**Enter a public trial identifier**"))
             nct_id = st.text_input(
                 tr("ClinicalTrials.gov NCT 编号", "ClinicalTrials.gov NCT ID"),
-                value="NCT02347774",
-                help="格式示例：NCT02347774",
+                value="",
+                placeholder="NCT00000000",
+                help=tr("输入完整 NCT 编号。", "Enter the complete NCT identifier."),
             )
             if st.button(tr("获取试验标准", "Fetch eligibility criteria"), type="primary", use_container_width=True):
                 with st.spinner(tr("正在读取 ClinicalTrials.gov...", "Reading ClinicalTrials.gov...")):
@@ -1423,6 +1481,9 @@ def page_import() -> None:
                 except (SourceError, PDFScannedError) as exc:
                     st.error(str(exc))
 
+    if not has_active_study():
+        return
+
     section_title(tr("核对方案原文", "Review the evidence source"))
     source_summary()
     left, right = st.columns([2.15, 1], gap="large")
@@ -1464,6 +1525,8 @@ def page_parse() -> None:
         ),
         tr("02 · 标准审核", "02 · RULE REVIEW"),
     )
+    if not require_active_study():
+        return
     source_summary()
     api_key = str(read_setting("DEEPSEEK_API_KEY", "") or "")
     model = str(read_setting("DEEPSEEK_MODEL", DEEPSEEK_DEFAULT_MODEL))
@@ -1481,11 +1544,10 @@ def page_parse() -> None:
     coverage = traceable / len(st.session_state.criteria) * 100 if st.session_state.criteria else 0
     c4.metric(tr("原文追溯率", "Source traceability"), f"{coverage:.0f}%")
 
-    section_title(tr("语义提取来源", "Semantic extraction controls"))
-    left, right = st.columns(2)
-    with left:
+    section_title(tr("生成待审标准", "Generate draft constraints"))
+    with st.container(border=True, key="semantic_extraction_controls"):
         if st.button(
-            tr("重新生成待审标准", "Regenerate draft constraints"),
+            tr("生成或重新生成待审标准", "Generate or refresh draft constraints"),
             use_container_width=True,
             disabled=not api_key or not live_enabled or required_chunks > remaining,
         ):
@@ -1512,16 +1574,9 @@ def page_parse() -> None:
                     st.success(st.session_state.last_parse_note)
                 except LLMParseError as exc:
                     st.error(str(exc))
-    with right:
-        if st.button(tr("恢复 GOLDEN-4 审核基准", "Restore reviewed reference rules"), use_container_width=True):
-            st.session_state.criteria = load_cached_demo_criteria()
-            st.session_state.results = None
-            st.session_state.last_parse_note = tr("已载入 27 条审核标准。", "Loaded 27 reviewed constraints.")
-            record_workspace_event(tr("审核基准已恢复", "Reviewed reference restored"))
-            st.success(st.session_state.last_parse_note)
 
     if not api_key:
-        st.info(tr("当前未配置自动解析服务；已审核的 GOLDEN-4 标准和规则分析功能仍可使用。", "Live extraction is not configured. The reviewed reference rules and all decision analyses remain available."))
+        st.info(tr("当前未配置结构化解析服务，请由系统管理员在部署配置中启用。", "The structured extraction service is not configured. Ask the system administrator to enable it in deployment settings."))
     elif not live_enabled:
         st.warning(tr("自动解析服务当前已关闭。", "Live semantic extraction is disabled."))
     elif required_chunks > remaining:
@@ -1531,7 +1586,7 @@ def page_parse() -> None:
         st.caption(tr(f"解析模型：{model} · 本会话剩余额度：{remaining} 次", f"Model: {model} · Session calls remaining: {remaining}"))
 
     if not st.session_state.criteria:
-        st.warning(tr("还没有结构化标准。请配置 API 后解析，或载入 GOLDEN-4 缓存。", "No structured constraints are available. Configure live extraction or restore the GOLDEN-4 reference rules."))
+        st.warning(tr("当前研究还没有结构化标准。完成解析后即可逐条审核。", "This study has no structured constraints yet. Generate them to begin line-by-line review."))
         return
 
     section_title(tr("逐条审核", "Review every constraint"))
@@ -1624,6 +1679,8 @@ def page_collaboration() -> None:
         ),
         tr("03 · 协作确认", "03 · TEAM SIGN-OFF"),
     )
+    if not require_active_study():
+        return
     if not st.session_state.criteria:
         st.warning(tr("请先完成标准解析与本地审核。", "Complete local rule review before team sign-off."))
         st.button(tr("返回标准审核", "Back to rule review"), type="primary", on_click=go_to, args=("标准解析",))
@@ -1755,19 +1812,100 @@ def page_collaboration() -> None:
 
 def page_screening() -> None:
     page_header(
-        tr("候选人群约束仿真", "Cohort laboratory"),
+        tr("候选队列评估", "Cohort evaluation"),
         tr(
-            "在固定合成队列中执行已审核规则，为后续边际影响和情景权衡提供可复现的计算底座。",
-            "Execute signed-off constraints against a fixed synthetic cohort. This is the computational layer behind marginal-impact and scenario analysis—not a patient enrolment tool.",
+            "导入当前研究的候选队列并执行已审核规则，逐条保留数据值、标准依据和判断结果。",
+            "Import the active study cohort and execute reviewed constraints while retaining values, protocol evidence and row-level outcomes.",
         ),
-        tr("04 · 约束仿真", "04 · COHORT LAB"),
+        tr("04 · 队列评估", "04 · COHORT EVALUATION"),
     )
+    if not require_active_study():
+        return
     if not st.session_state.criteria:
         st.warning(tr("请先完成方案约束审核。", "Review the protocol constraints before running the cohort lab."))
         return
+
+    required_fields = sorted(
+        {
+            field
+            for criterion in st.session_state.criteria
+            for field in ([criterion.field] if criterion.field else []) + list(criterion.applicability)
+        }
+    )
+    section_title(tr("候选队列数据", "Cohort data"))
+    with st.container(border=True, key="cohort_import_panel"):
+        info_col, download_col = st.columns([3.4, 1], vertical_alignment="center")
+        info_col.markdown(
+            f"<div class='ts-cohort-requirements'><b>{escape(tr('CSV 数据要求', 'CSV requirements'))}</b>"
+            f"<span>{escape(tr('必须包含唯一 patient_id；缺少的规则字段会被标记为信息不足，不会静默排除。', 'A unique patient_id is required. Missing rule fields are marked unresolved rather than silently excluded.'))}</span>"
+            f"<small>{escape(tr('当前规则字段：', 'Current rule fields:'))} {escape(', '.join(required_fields) if required_fields else '—')}</small></div>",
+            unsafe_allow_html=True,
+        )
+        template = pd.DataFrame(columns=["patient_id", *required_fields])
+        download_col.download_button(
+            tr("下载空白模板", "Download template"),
+            data=template.to_csv(index=False).encode("utf-8-sig"),
+            file_name="trialscope_cohort_template.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+        uploaded_cohort = st.file_uploader(
+            tr("上传候选队列 CSV", "Upload cohort CSV"),
+            type=["csv"],
+            accept_multiple_files=False,
+            key="cohort_upload",
+        )
+        st.caption(tr(
+            "仅可使用经过授权且已去标识化的数据，不要上传姓名、证件号、联系方式等直接身份信息。",
+            "Use only authorized, de-identified data. Do not upload names, government identifiers, contact details or other direct identifiers.",
+        ))
+        if uploaded_cohort and st.button(
+            tr("载入候选队列", "Load cohort"),
+            key="load_cohort_button",
+            type="primary",
+        ):
+            try:
+                cohort = pd.read_csv(uploaded_cohort)
+                if cohort.empty:
+                    raise ValueError(tr("CSV 中没有数据记录。", "The CSV contains no data rows."))
+                if "patient_id" not in cohort.columns:
+                    raise ValueError(tr("CSV 必须包含 patient_id 列。", "The CSV must contain a patient_id column."))
+                cohort["patient_id"] = cohort["patient_id"].astype(str).str.strip()
+                if (cohort["patient_id"] == "").any() or cohort["patient_id"].duplicated().any():
+                    raise ValueError(tr("patient_id 不能为空且必须唯一。", "patient_id values must be non-empty and unique."))
+                if len(cohort) > 50000:
+                    raise ValueError(tr("单次队列最多支持 50,000 条记录。", "A cohort may contain at most 50,000 rows."))
+                st.session_state.patients = cohort
+                st.session_state.cohort_file_name = uploaded_cohort.name
+                st.session_state.results = None
+                st.session_state.scenario_comparison = None
+                st.session_state.scenario_results = None
+                missing_columns = [field for field in required_fields if field not in cohort.columns]
+                record_workspace_event(
+                    tr("候选队列已导入", "Cohort imported"),
+                    f"{uploaded_cohort.name} · {len(cohort)} rows",
+                )
+                if missing_columns:
+                    st.warning(tr(
+                        f"已载入 {len(cohort)} 条记录；缺少 {len(missing_columns)} 个规则字段，相关结果将标记为信息不足。",
+                        f"Loaded {len(cohort)} rows. {len(missing_columns)} rule fields are absent and will be marked unresolved.",
+                    ))
+                else:
+                    st.success(tr(f"已载入 {len(cohort)} 条候选记录。", f"Loaded {len(cohort)} cohort rows."))
+            except (ValueError, pd.errors.ParserError, UnicodeDecodeError) as exc:
+                st.error(str(exc))
+
+    if st.session_state.patients.empty:
+        st.info(tr("当前研究尚未导入候选队列。", "No cohort has been imported for this study."))
+        return
+
+    st.caption(tr(
+        f"当前队列：{st.session_state.cohort_file_name or '会话数据'} · {len(st.session_state.patients)} 条记录",
+        f"Active cohort: {st.session_state.cohort_file_name or 'session data'} · {len(st.session_state.patients)} rows",
+    ))
     st.markdown(
-        f"<div class='ts-action-guide'><strong>{escape(tr('当前任务：建立可复现的基线队列', 'Current task: establish a reproducible baseline'))}</strong>"
-        f"<span>{escape(tr('先运行已确认规则，再检查总体状态；逐条证据放在下方作为审计入口。', 'Run the signed-off rules first. Row-level evidence remains available below for audit and debugging.'))}</span></div>",
+        f"<div class='ts-action-guide'><strong>{escape(tr('当前任务：运行已审核规则', 'Current task: run reviewed constraints'))}</strong>"
+        f"<span>{escape(tr('执行后先检查总体状态，再通过下方记录进入逐条证据审计。', 'Run the evaluation, review overall states, then open row-level evidence below.'))}</span></div>",
         unsafe_allow_html=True,
     )
     if st.button(tr("运行方案约束仿真", "Run cohort simulation"), type="primary"):
@@ -1778,7 +1916,9 @@ def page_screening() -> None:
             st.session_state.scenario_comparison = None
             record_workspace_event(tr("队列评估已运行", "Cohort evaluation run"))
         st.success(tr("基线约束仿真完成。", "Baseline cohort simulation complete."))
-    ensure_results()
+    if st.session_state.results is None:
+        st.info(tr("队列已就绪，点击上方按钮运行评估。", "The cohort is ready. Run the evaluation to generate results."))
+        return
     results = st.session_state.results
     counts = Counter(item.overall_status for item in results)
     columns = st.columns(4)
@@ -1798,7 +1938,7 @@ def page_screening() -> None:
     filtered_frame = display_frame[
         display_frame["overall_status"].isin(selected_labels)
     ].reset_index(drop=True)
-    st.caption(tr("点击一行可以查看逐条规则证据；这些合成记录只用于验证计算逻辑。", "Select a row to audit every rule outcome. These synthetic records exist only to validate the decision logic."))
+    st.caption(tr("点击一行可以查看逐条规则证据。", "Select a row to audit every rule outcome."))
     selection_event = st.dataframe(
         filtered_frame,
         width="stretch",
@@ -1808,7 +1948,7 @@ def page_screening() -> None:
         selection_mode="single-row",
         key="patient_results_table",
         column_config={
-            "patient_id": st.column_config.TextColumn(tr("候选者编号", "Synthetic ID"), width="small"),
+            "patient_id": st.column_config.TextColumn(tr("候选者编号", "Candidate ID"), width="small"),
             "overall_status": st.column_config.TextColumn(tr("队列状态", "Cohort state"), width="small"),
             "summary": st.column_config.TextColumn(tr("判断摘要", "Evidence summary"), width="large"),
             "failed_count": st.column_config.NumberColumn(tr("未满足", "Failed"), width="small"),
@@ -1843,7 +1983,7 @@ def page_screening() -> None:
     patient_row = st.session_state.patients[
         st.session_state.patients["patient_id"].astype(str) == patient_id
     ]
-    with st.expander(tr("查看合成候选者原始字段", "Inspect synthetic source fields"), expanded=False):
+    with st.expander(tr("查看候选记录原始字段", "Inspect candidate source fields"), expanded=False):
         patient_view = patient_row.T.rename(columns={patient_row.index[0]: "值"}).reset_index()
         field_col, value_col = tr("字段", "Field"), tr("值", "Value")
         patient_view.columns = [field_col, value_col]
@@ -1904,7 +2044,8 @@ def page_analysis() -> None:
         ),
         tr("05 · 决策评估", "05 · DECISION VIEW"),
     )
-    ensure_results()
+    if not require_active_study():
+        return
     if not st.session_state.results:
         st.warning(tr("请先运行方案约束仿真。", "Run the cohort laboratory before opening the decision view."))
         return
@@ -1930,7 +2071,7 @@ def page_analysis() -> None:
 
     summary_columns = st.columns(4)
     with summary_columns[0]:
-        insight_card(tr("基线候选规模", "Baseline candidate scale"), str(counts.get("eligible", 0)), tr(f"占合成队列 {eligible_rate:.1f}%", f"{eligible_rate:.1f}% of the synthetic cohort"))
+        insight_card(tr("基线候选规模", "Baseline candidate scale"), str(counts.get("eligible", 0)), tr(f"占导入队列 {eligible_rate:.1f}%", f"{eligible_rate:.1f}% of the imported cohort"))
     with summary_columns[1]:
         insight_card(tr("潜在候选规模", "Potential candidate scale"), str(potential), tr("基线候选与待复核合计", "Rule-eligible plus clinical review"))
     with summary_columns[2]:
@@ -1953,13 +2094,9 @@ def page_analysis() -> None:
             funnel = build_funnel(patients, criteria)
             if current_language() == "en":
                 funnel["stage"] = funnel["stage"].replace({
-                    "候选队列": "Synthetic cohort",
-                    "年龄与诊断": "Age and diagnosis",
-                    "吸烟史": "Smoking exposure",
-                    "肺功能": "Pulmonary function",
-                    "近期事件": "Recent events",
-                    "其他可执行排除项": "Other executable exclusions",
-                    "模拟符合或待复核": "Rule-eligible or clinical review",
+                    "候选队列": "Imported cohort",
+                    "其余可执行标准": "Remaining executable constraints",
+                    "规则符合或待复核": "Rule-eligible or clinical review",
                 })
             fig = px.funnel(funnel, x="count", y="stage")
             fig.update_traces(marker_color="#2F7A73", textfont_color="#F4F8FB")
@@ -1995,34 +2132,37 @@ def page_analysis() -> None:
                     config={"displayModeBar": False},
                 )
     with representation_tab:
-        st.markdown(tr("**候选队列与基线候选人群对比**", "**Full synthetic cohort vs baseline candidate cohort**"))
+        st.markdown(tr("**导入队列与基线候选人群对比**", "**Imported cohort vs baseline candidate cohort**"))
         representation = representation_table(patients, results)
-        if current_language() == "en":
-            representation["group"] = representation["group"].replace({
-                "候选队列": "Synthetic cohort",
-                "模拟符合或待复核": "Rule-eligible or clinical review",
-            })
-            representation["metric"] = representation["metric"].replace({
-                "平均年龄": "Mean age",
-                "女性占比": "Female (%)",
-                "65岁及以上占比": "Age 65+ (%)",
-                "重度COPD占比": "Severe COPD (%)",
-            })
-        fig = px.bar(
-            representation,
-            x="metric",
-            y="value",
-            color="group",
-            barmode="group",
-            color_discrete_sequence=["#A7B5C0", "#2F7A73"],
-            labels={"metric": tr("指标", "Measure"), "value": tr("数值", "Value"), "group": tr("人群", "Cohort")},
-        )
-        st.plotly_chart(
-            style_figure(fig, height=390),
-            width="stretch",
-            config={"displayModeBar": False},
-        )
-        st.caption(tr("比例指标单位为%，平均年龄单位为岁。合成数据不代表真实疾病人群分布。", "Percentage measures use percentage points; mean age is in years. Synthetic data do not estimate a real disease population."))
+        if representation.empty:
+            st.info(tr("当前队列未提供 age、sex 或 disease_severity 字段，暂不展示人群构成。", "The cohort does not include age, sex or disease_severity, so composition metrics are unavailable."))
+        else:
+            if current_language() == "en":
+                representation["group"] = representation["group"].replace({
+                    "候选队列": "Imported cohort",
+                    "规则符合或待复核": "Rule-eligible or clinical review",
+                })
+                representation["metric"] = representation["metric"].replace({
+                    "平均年龄": "Mean age",
+                    "女性占比": "Female (%)",
+                    "65岁及以上占比": "Age 65+ (%)",
+                    "重度疾病占比": "Severe disease (%)",
+                })
+            fig = px.bar(
+                representation,
+                x="metric",
+                y="value",
+                color="group",
+                barmode="group",
+                color_discrete_sequence=["#A7B5C0", "#2F7A73"],
+                labels={"metric": tr("指标", "Measure"), "value": tr("数值", "Value"), "group": tr("人群", "Cohort")},
+            )
+            st.plotly_chart(
+                style_figure(fig, height=390),
+                width="stretch",
+                config={"displayModeBar": False},
+            )
+            st.caption(tr("比例指标单位为%，平均年龄单位为岁；人群构成只代表当前导入队列。", "Percentage measures use percentage points; mean age is in years. Composition reflects only the imported cohort."))
     with completeness_tab:
         st.markdown(tr("**影响规则执行的主要缺失字段**", "**Missing fields that block deterministic execution**"))
         top_missing = missing.head(8).copy()
@@ -2111,79 +2251,74 @@ def page_analysis() -> None:
     section_title(tr("多目标情景权衡", "Multi-objective scenario trade-off"))
     st.markdown(
         f"<div class='ts-boundary'><b>{escape(tr('安全提示：', 'Decision boundary:'))}</b>"
-        f"{escape(tr('参数调整只展示合成队列变化，不构成临床试验方案修改建议。', 'Scenario controls expose trade-offs in the synthetic cohort; they do not recommend a protocol amendment.'))}</div>",
+        f"{escape(tr('参数调整只展示当前导入队列的变化，不构成临床试验方案修改建议。', 'Scenario controls expose trade-offs in the imported cohort; they do not recommend a protocol amendment.'))}</div>",
         unsafe_allow_html=True,
     )
-    with st.expander(tr("调整方案参数", "Configure a protocol scenario"), expanded=False):
-        st.caption(tr("可先载入一个对照示例，再逐项调整。预设仅用于展示权衡，不代表推荐方向。", "Start from an illustrative preset, then edit individual values. Presets demonstrate trade-offs and do not imply a preferred protocol."))
-        preset_columns = st.columns(3)
-        preset_columns[0].button(
-            tr("恢复原方案基线", "Restore protocol baseline"),
-            on_click=load_scenario_preset,
-            args=("baseline",),
-            use_container_width=True,
-            key="scenario_preset_baseline",
-        )
-        preset_columns[1].button(
-            tr("候选池扩展示例", "Illustrative expansion"),
-            on_click=load_scenario_preset,
-            args=("expansion",),
-            use_container_width=True,
-            key="scenario_preset_expansion",
-        )
-        preset_columns[2].button(
-            tr("聚焦人群示例", "Illustrative focus"),
-            on_click=load_scenario_preset,
-            args=("focused",),
-            use_container_width=True,
-            key="scenario_preset_focused",
-        )
-        row1 = st.columns(4)
-        age_min = row1[0].number_input(tr("最低年龄", "Minimum age"), 18, 90, 40, key="scenario_age_min")
-        pack_years = row1[1].number_input(tr("最低吸烟包年", "Minimum pack-years"), 0.0, 100.0, 10.0, 1.0, key="scenario_pack_years")
-        fev1_pct = row1[2].number_input(tr("FEV1 %预计值上限", "Maximum FEV1 % predicted"), 20.0, 120.0, 80.0, 1.0, key="scenario_fev1_pct")
-        fev1_liters = row1[3].number_input(tr("FEV1 容量下限（L）", "Minimum FEV1 volume (L)"), 0.1, 5.0, 0.7, 0.1, key="scenario_fev1_liters")
-        row2 = st.columns(4)
-        ratio = row2[0].number_input(tr("FEV1/FVC 上限", "Maximum FEV1/FVC"), 0.3, 1.0, 0.7, 0.01, key="scenario_ratio")
-        oxygen = row2[1].number_input(tr("每日氧疗上限（小时）", "Maximum oxygen hours/day"), 0.0, 24.0, 12.0, 1.0, key="scenario_oxygen")
-        exacerbation_days = row2[2].number_input(tr("急性加重窗口（天）", "Exacerbation window (days)"), 1, 365, 42, key="scenario_exacerbation_days")
-        infection_days = row2[3].number_input(tr("感染窗口（天）", "Infection window (days)"), 1, 365, 42, key="scenario_infection_days")
+    adjustable = [
+        item
+        for item in criteria
+        if item.execution_status == "automated"
+        and item.field
+        and item.operator in {"lt", "lte", "gt", "gte", "within_days"}
+        and isinstance(item.value, (int, float))
+        and not isinstance(item.value, bool)
+    ]
+    if not adjustable:
+        st.info(tr("当前研究没有可进行数值情景调整的标准。", "This study has no numeric constraints available for scenario adjustment."))
+    else:
+        with st.expander(tr("调整一项方案参数", "Adjust one protocol parameter"), expanded=False):
+            st.caption(tr(
+                "从当前研究的已审核数值标准中选择一项，比较阈值变化前后的队列结果。",
+                "Select one reviewed numeric constraint from the active study and compare cohort outcomes before and after the threshold change.",
+            ))
+            selected_id = st.selectbox(
+                tr("选择标准", "Select constraint"),
+                options=[item.criterion_id for item in adjustable],
+                format_func=lambda criterion_id: next(
+                    f"{item.criterion_id} · {field_labels().get(item.field, item.field)} · {item.operator} {item.value}{(' ' + item.unit) if item.unit else ''}"
+                    for item in adjustable
+                    if item.criterion_id == criterion_id
+                ),
+                key="scenario_criterion_id",
+            )
+            selected = next(item for item in adjustable if item.criterion_id == selected_id)
+            baseline_value = float(selected.value)
+            step = max(abs(baseline_value) * 0.05, 0.1)
+            scenario_value = st.number_input(
+                tr("情景阈值", "Scenario threshold"),
+                value=baseline_value,
+                step=step,
+                key=f"scenario_value_{selected_id}",
+                help=selected.source_text,
+            )
+            st.caption(
+                tr(
+                    f"基线：{selected.operator} {selected.value}{(' ' + selected.unit) if selected.unit else ''}",
+                    f"Baseline: {selected.operator} {selected.value}{(' ' + selected.unit) if selected.unit else ''}",
+                )
+            )
 
-        if st.button(tr("运行情景权衡", "Run scenario trade-off"), type="primary"):
-            scenario_parameters = {
-                "最低年龄": age_min,
-                "最低吸烟包年": pack_years,
-                "FEV1预计值上限": fev1_pct,
-                "FEV1容量下限_L": fev1_liters,
-                "FEV1_FVC上限": ratio,
-                "每日氧疗上限_小时": oxygen,
-                "急性加重窗口_天": exacerbation_days,
-                "感染窗口_天": infection_days,
-            }
-            scenario_criteria = apply_scenario(
-                criteria,
-                {
-                    "I01": age_min,
-                    "I03": pack_years,
-                    "I04": fev1_pct,
-                    "I05": fev1_liters,
-                    "I06": ratio,
-                    "E04": oxygen,
-                    "E03": exacerbation_days,
-                    "E05": infection_days,
-                },
-            )
-            comparison, _, scenario_results = scenario_comparison(
-                patients, criteria, scenario_criteria
-            )
-            st.session_state.scenario_comparison = comparison
-            st.session_state.scenario_results = scenario_results
-            st.session_state.scenario_parameters = scenario_parameters
-            st.session_state.scenario_snapshot_key = (
-                f"{st.session_state.source.identifier}:scenario:"
-                f"{datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y%m%d%H%M%S')}"
-            )
-            record_workspace_event(tr("情景分析已运行", "Scenario analysis run"))
+            if st.button(tr("运行情景权衡", "Run scenario trade-off"), type="primary"):
+                scenario_parameters = {
+                    "criterion_id": selected.criterion_id,
+                    "field": selected.field,
+                    "operator": selected.operator,
+                    "baseline": selected.value,
+                    "scenario": scenario_value,
+                    "unit": selected.unit or "",
+                }
+                scenario_criteria = apply_scenario(criteria, {selected.criterion_id: scenario_value})
+                comparison, _, scenario_results = scenario_comparison(
+                    patients, criteria, scenario_criteria
+                )
+                st.session_state.scenario_comparison = comparison
+                st.session_state.scenario_results = scenario_results
+                st.session_state.scenario_parameters = scenario_parameters
+                st.session_state.scenario_snapshot_key = (
+                    f"{st.session_state.source.identifier}:scenario:"
+                    f"{datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y%m%d%H%M%S')}"
+                )
+                record_workspace_event(tr("情景分析已运行", "Scenario analysis run"), selected.criterion_id)
 
     if st.session_state.scenario_comparison is not None:
         comparison = st.session_state.scenario_comparison
@@ -2198,18 +2333,21 @@ def page_analysis() -> None:
         scale = tradeoff_index.loc["eligible_count"]
         representation_gap = tradeoff_index.loc["representation_gap"]
         missing_burden = tradeoff_index.loc["missing_data_count"]
+        representation_available = any(
+            field in patients.columns for field in ["age", "sex", "disease_severity"]
+        )
         scenario_metrics[0].metric(
             tr("候选规模", "Candidate scale"),
             int(scale["scenario"]),
             delta=int(scale["change"]),
-            help=tr("严格通过全部可执行规则的合成候选者", "Synthetic records that pass every executable constraint"),
+            help=tr("严格通过全部可执行规则的候选记录", "Candidate records that pass every executable constraint"),
         )
         scenario_metrics[1].metric(
             tr("代表性差距", "Representation gap"),
-            f"{float(representation_gap['scenario']):.1f} pp",
-            delta=f"{float(representation_gap['change']):+.1f} pp",
+            f"{float(representation_gap['scenario']):.1f} pp" if representation_available else "—",
+            delta=f"{float(representation_gap['change']):+.1f} pp" if representation_available else None,
             delta_color="inverse",
-            help=tr("女性、65岁以上和重度COPD占比相对完整队列的平均绝对差；越低越接近", "Mean absolute gap from the full cohort across female, age 65+ and severe COPD shares; lower is closer"),
+            help=tr("根据当前队列中可用的年龄、性别和疾病程度字段计算；越低越接近完整队列", "Calculated from available age, sex and disease-severity fields; lower is closer to the full cohort"),
         )
         scenario_metrics[2].metric(
             tr("信息不足", "Data-unresolved"),
@@ -2291,7 +2429,7 @@ def page_analysis() -> None:
                         "试验编号": st.session_state.source.identifier,
                         "分析版本": 1,
                         "情景名称": scenario_name,
-                        "合成候选人数": len(patients),
+                        "候选记录数": len(patients),
                         "模拟符合人数": scenario_counts.get("eligible", 0),
                         "不符合人数": scenario_counts.get("ineligible", 0),
                         "信息不足人数": scenario_counts.get("missing_data", 0),
@@ -2303,7 +2441,7 @@ def page_analysis() -> None:
                             separators=(",", ":"),
                         ),
                         "人数变化": int(eligible_row["change"]),
-                        "代表性变化": "合成队列结果；人群构成变化需结合页面图表复核",
+                        "代表性变化": "当前队列结果；人群构成变化需结合页面图表复核",
                         "医学统计意见": scenario_note.strip(),
                         "应用链接": feishu_url_value(
                             "https://trialscopeai.streamlit.app/",
@@ -2342,231 +2480,80 @@ def page_analysis() -> None:
 
 def page_validation() -> None:
     page_header(
-        tr("验证证据与适用边界", "Evidence register and decision boundaries"),
+        tr("审计与数据治理", "Audit and data governance"),
         tr(
-            "把已经完成的工程验证、正在采集的业务证据和不能外推的结论分开呈现。",
-            "Separate verified engineering behaviour from pending business evidence and conclusions outside the system's current scope.",
+            "集中检查当前研究的标准来源、执行方式、人工复核项与数据处理边界。",
+            "Review constraint provenance, execution mode, clinical review items and data-handling boundaries for the active study.",
         ),
-        tr("系统质量", "SYSTEM QUALITY"),
+        tr("研究治理", "STUDY GOVERNANCE"),
     )
+    if not require_active_study():
+        return
     criteria = st.session_state.criteria
     traceable = sum(bool(item.source_text and item.source_reference) for item in criteria)
+    automated = sum(item.execution_status == "automated" for item in criteria)
+    human_review = sum(item.execution_status == "human_review" for item in criteria)
     columns = st.columns(4)
     metrics = [
-        (tr("审核标准", "Reviewed constraints"), str(len(criteria)), tr("GOLDEN-4 人工校核版本", "Clinically reviewed GOLDEN-4 reference")),
-        (tr("边界案例", "Boundary cases"), "50", tr("含等值、缺失、时间窗和多重失败", "Thresholds, missingness, windows and multiple failures")),
-        (tr("自动化测试", "Automated checks"), "54", tr("本地与 GitHub Actions 使用同一套测试", "Same suite locally and in GitHub Actions")),
-        (tr("来源追溯", "Source traceability"), f"{traceable}/{len(criteria)}", tr("标准原文与公开来源均保留", "Source statement and public reference retained")),
+        (tr("当前标准", "Current constraints"), str(len(criteria)), tr("当前研究工作区", "Active study workspace")),
+        (tr("规则执行", "Rule-executable"), str(automated), tr("由确定性规则引擎运行", "Executed by the deterministic rule engine")),
+        (tr("人工复核", "Clinical review"), str(human_review), tr("保留医学或运营判断", "Reserved for medical or operational judgement")),
+        (tr("来源追溯", "Source traceability"), f"{traceable}/{len(criteria)}", tr("保留标准原文与来源", "Source statement and reference retained")),
     ]
     for column, (label, value, note) in zip(columns, metrics):
         with column:
             insight_card(label, value, note)
 
-    section_title(tr("证据状态", "What is verified—and what is not"))
-    keys = {
-        "item": tr("验证项目", "Evidence item"),
-        "status": tr("状态", "Status"),
-        "evidence": tr("当前证据", "Current evidence"),
-        "claim": tr("能支持的结论", "Supported claim"),
-    }
-    evidence_rows = [
-        {
-            keys["item"]: tr("规则引擎边界案例", "Rule-engine boundary cases"),
-            keys["status"]: tr("已完成", "Verified"),
-            keys["evidence"]: tr("50 例人工设定预期结果", "50 cases with manually specified expected outcomes"),
-            keys["claim"]: tr("受支持运算符和判定优先级可重复执行", "Supported operators and precedence rules execute reproducibly"),
-        },
-        {
-            keys["item"]: tr("离线完整工作流", "Offline end-to-end workflow"),
-            keys["status"]: tr("已完成", "Verified"),
-            keys["evidence"]: tr("无 API Key 时仍可载入、审核、仿真和分析", "Protocol, review, simulation and analysis work without an API key"),
-            keys["claim"]: tr("评审现场不依赖外部模型服务", "The reviewer path does not depend on a live model service"),
-        },
-        {
-            keys["item"]: tr("标准来源追溯", "Constraint traceability"),
-            keys["status"]: tr("已完成", "Verified"),
-            keys["evidence"]: tr(f"{traceable}/{len(criteria)} 条保留原文和来源", f"{traceable}/{len(criteria)} constraints retain source text and reference"),
-            keys["claim"]: tr("每条计算结果可以回到方案依据", "Every calculated outcome can be traced to protocol evidence"),
-        },
-        {
-            keys["item"]: tr("多方案结构化准确性", "Cross-protocol extraction accuracy"),
-            keys["status"]: tr("待采集", "Pending"),
-            keys["evidence"]: tr("计划使用公开呼吸系统试验建立金标准", "A public respiratory-trial gold set is planned"),
-            keys["claim"]: tr("完成后报告字段级准确率与错误类型", "Will support field-level accuracy and error analysis once measured"),
-        },
-        {
-            keys["item"]: tr("医学人员效率对照", "Reviewer efficiency comparison"),
-            keys["status"]: tr("待采集", "Pending"),
-            keys["evidence"]: tr("计划比较人工录入与工具辅助审核耗时", "Manual authoring will be compared with assisted review"),
-            keys["claim"]: tr("完成后只报告实测时间与遗漏数", "Only measured time and omissions will be reported"),
-        },
-        {
-            keys["item"]: tr("飞书协作回读", "Feishu review round-trip"),
-            keys["status"]: tr("待配置", "Not configured") if not feishu_settings().configured else tr("可验证", "Ready to verify"),
-            keys["evidence"]: tr("同步不会覆盖审核字段，读取后需人工确认差异", "Sync preserves reviewer fields and requires confirmation before applying a diff"),
-            keys["claim"]: tr("审核意见进入规则前有明确控制点", "A visible control gate exists before reviewer changes reach the rule engine"),
-        },
-    ]
-    st.dataframe(
-        pd.DataFrame(evidence_rows),
-        width="stretch",
-        hide_index=True,
-        column_config={
-            keys["item"]: st.column_config.TextColumn(width="medium"),
-            keys["status"]: st.column_config.TextColumn(width="small"),
-            keys["evidence"]: st.column_config.TextColumn(width="large"),
-            keys["claim"]: st.column_config.TextColumn(width="large"),
-        },
-    )
-    st.info(tr("多方案准确性和效率对照尚未完成，因此当前页面不展示推测性的提效百分比。", "Cross-protocol accuracy and reviewer-efficiency studies are still pending, so no speculative productivity claim is shown."))
-
-    section_title(tr("效率验证记录模板", "Reviewer study template"))
-    st.caption(tr("建议由医学专业同学分别完成纯人工和工具辅助任务，记录真实耗时、遗漏和修改数量。", "Medical reviewers should complete manual and assisted tasks while recording time, omissions and corrections."))
-    validation_template = pd.DataFrame(
-        columns=[
-            "参与者编号",
-            "专业背景",
-            "公开试验编号",
-            "处理方式",
-            "开始时间",
-            "结束时间",
-            "总耗时_分钟",
-            "标准总数",
-            "遗漏数",
-            "人工修改字段数",
-            "备注",
-        ]
-    )
-    st.download_button(
-        tr("下载效率验证记录模板 CSV", "Download reviewer-study template"),
-        data=validation_template.to_csv(index=False).encode("utf-8-sig"),
-        file_name="trialscope_validation_log.csv",
-        mime="text/csv",
-    )
-
-    settings = feishu_settings()
-    if (
-        bool_setting("ENABLE_FEISHU_SYNC", False)
-        and settings.configured
-        and settings.validation_table_id
-    ):
-        with st.expander(tr("记录一次真实验证", "Log a completed validation run"), expanded=False):
-            st.caption(tr("请只填写实际完成的测试；尚未测得的数据不要用估计值代替。", "Record completed work only; leave unmeasured outcomes blank instead of estimating them."))
-            with st.form("feishu_validation_form"):
-                form_row_1 = st.columns(3)
-                validation_type_options = ["规则边界", "完整路径", "提取准确性", "工作效率"]
-                validation_type = form_row_1[0].selectbox(
-                    tr("测试类型", "Study type"),
-                    validation_type_options,
-                    format_func=lambda value: {
-                        "规则边界": tr("规则边界", "Rule boundaries"),
-                        "完整路径": tr("完整路径", "End-to-end workflow"),
-                        "提取准确性": tr("提取准确性", "Extraction accuracy"),
-                        "工作效率": tr("工作效率", "Reviewer efficiency"),
-                    }[value],
-                )
-                tester = form_row_1[1].text_input(tr("测试人员", "Reviewer"))
-                test_date = form_row_1[2].date_input(tr("测试日期", "Study date"))
-                form_row_2 = st.columns(4)
-                total_criteria = form_row_2[0].number_input(
-                    tr("标准总数", "Total constraints"), min_value=0, value=len(criteria), step=1
-                )
-                extracted_count = form_row_2[1].number_input(
-                    tr("自动提取数", "Automatically extracted"), min_value=0, value=0, step=1
-                )
-                modified_count = form_row_2[2].number_input(
-                    tr("人工修改数", "Reviewer corrections"), min_value=0, value=0, step=1
-                )
-                omitted_count = form_row_2[3].number_input(
-                    tr("遗漏数", "Omissions"), min_value=0, value=0, step=1
-                )
-                form_row_3 = st.columns(4)
-                manual_minutes = form_row_3[0].number_input(
-                    tr("人工耗时（分钟）", "Manual time (min)"), min_value=0.0, value=0.0, step=0.5
-                )
-                assisted_minutes = form_row_3[1].number_input(
-                    tr("辅助耗时（分钟）", "Assisted time (min)"), min_value=0.0, value=0.0, step=0.5
-                )
-                field_f1 = form_row_3[2].number_input(
-                    tr("字段 F1", "Field-level F1"), min_value=0.0, max_value=1.0, value=0.0, step=0.01
-                )
-                traceability_rate = form_row_3[3].number_input(
-                    tr("来源追溯率", "Traceability rate"), min_value=0.0, max_value=1.0, value=0.0, step=0.01
-                )
-                version = st.text_input(tr("版本", "Version"), value="v1")
-                validation_note = st.text_area(tr("备注", "Notes"))
-                submit_validation = st.form_submit_button(
-                    tr("保存到飞书验证记录", "Save validation record to Feishu"),
-                    use_container_width=True,
-                )
-            if submit_validation:
-                normalized_tester = tester.strip() or "未署名"
-                validation_key = (
-                    f"{st.session_state.source.identifier}:{validation_type}:"
-                    f"{test_date.isoformat()}:{normalized_tester}"
-                )
-                test_datetime = datetime.combine(
-                    test_date,
-                    datetime_time.min,
-                    tzinfo=ZoneInfo("Asia/Shanghai"),
-                )
-                validation_fields = {
-                    "验证键": validation_key,
-                    "试验编号": st.session_state.source.identifier,
-                    "测试类型": validation_type,
-                    "标准总数": int(total_criteria),
-                    "自动提取数": int(extracted_count),
-                    "人工修改数": int(modified_count),
-                    "遗漏数": int(omitted_count),
-                    "人工耗时分钟": float(manual_minutes),
-                    "辅助耗时分钟": float(assisted_minutes),
-                    "字段F1": float(field_f1),
-                    "来源追溯率": float(traceability_rate),
-                    "测试人员": normalized_tester,
-                    "版本": version.strip() or "v1",
-                    "备注": validation_note.strip(),
-                    "测试日期": int(test_datetime.timestamp() * 1000),
+    section_title(tr("标准审计清单", "Constraint audit register"))
+    if criteria:
+        audit_frame = pd.DataFrame(
+            [
+                {
+                    tr("标准编号", "Constraint ID"): item.criterion_id,
+                    tr("类型", "Type"): kind_labels().get(item.kind, item.kind),
+                    tr("执行方式", "Execution"): execution_labels().get(item.execution_status, item.execution_status),
+                    tr("来源", "Source reference"): item.source_reference,
+                    tr("置信度", "Confidence"): round(item.confidence, 2),
+                    tr("备注", "Note"): item.note,
                 }
-                try:
-                    with st.spinner(tr("正在保存验证记录...", "Saving validation record...")):
-                        with FeishuClient(settings) as client:
-                            action = client.upsert_record(
-                                settings.validation_table_id,
-                                "验证键",
-                                validation_fields,
-                            )
-                    verb = "新建" if action == "created" else "更新"
-                    st.success(
-                        tr(
-                            f"已在飞书验证记录表中{verb}本次数据。",
-                            "The validation record has been saved to Feishu.",
-                        )
-                    )
-                except FeishuError as exc:
-                    st.error(str(exc))
+                for item in criteria
+            ]
+        )
+        st.dataframe(audit_frame, width="stretch", hide_index=True, height=360)
+    else:
+        st.info(tr("当前研究尚未生成结构化标准。", "The active study does not yet have structured constraints."))
 
-    section_title(tr("当前结果不能支持的结论", "Conclusions outside the current system scope"))
+    section_title(tr("数据处理原则", "Data-handling principles"))
     boundary_columns = st.columns(3)
-    boundaries = [
-        (tr("不代表真实入组率", "Not a real enrolment rate"), tr("500 名候选者为合成数据，只用于验证计算和展示流程。", "The 500 records are synthetic and validate only the workflow and calculations.")),
-        (tr("不自动修改方案", "No automatic protocol amendment"), tr("情景比较用于讨论权衡，任何变更仍需医学、统计和伦理审核。", "Scenario analysis frames trade-offs; medical, statistical and ethics review remain required.")),
-        (tr("不处理真实患者决策", "No patient-level clinical decision"), tr("系统不诊断、不自动入组，也不替代研究者判断。", "The system does not diagnose, enrol or replace investigator judgement.")),
+    governance = [
+        (
+            tr("方案文件", "Protocol files"),
+            tr("上传文件仅在当前会话内存中处理，不保存 PDF 原文件。", "Uploaded files are processed in session memory; original PDFs are not retained."),
+        ),
+        (
+            tr("候选数据", "Candidate data"),
+            tr("当前系统不接收真实患者身份信息，结果不用于自动入组。", "The current system does not accept patient identifiers and does not automate enrolment."),
+        ),
+        (
+            tr("人工责任", "Human accountability"),
+            tr("主观标准和情景变化必须由医学、统计或伦理人员复核。", "Judgement-only criteria and scenario changes require medical, statistical or ethics review."),
+        ),
     ]
-    for column, (title, note) in zip(boundary_columns, boundaries):
-        with column:
-            st.markdown(
-                f"<div class='ts-boundary-card'><b>{escape(title)}</b><p>{escape(note)}</p></div>",
-                unsafe_allow_html=True,
-            )
+    for column, (title, note) in zip(boundary_columns, governance):
+        column.markdown(
+            f"<div class='ts-boundary-card'><b>{escape(title)}</b><p>{escape(note)}</p></div>",
+            unsafe_allow_html=True,
+        )
 
 
 def top_navigation() -> str:
     page = st.session_state.navigation
     source: TrialSource = st.session_state.source
-    study_name = (
-        "GOLDEN-4 · Phase III COPD"
-        if source.identifier == "NCT02347774"
-        else source.title
+    active_study = has_active_study()
+    study_label = (
+        f"{source.identifier} · {source.title}"
+        if active_study
+        else tr("尚未选择研究 · 请先导入方案", "NO ACTIVE STUDY · IMPORT A PROTOCOL")
     )
     with st.container(key="application_header"):
         brand_col, study_col, language_col = st.columns(
@@ -2579,7 +2566,7 @@ def top_navigation() -> str:
         )
         study_col.markdown(
             f"<div class='ts-top-study'><span>{escape(tr('当前研究', 'ACTIVE STUDY'))}</span>"
-            f"<b>{escape(source.identifier)} · {escape(study_name)}</b></div>",
+            f"<b>{escape(study_label)}</b></div>",
             unsafe_allow_html=True,
         )
         with language_col:
@@ -2606,7 +2593,7 @@ def top_navigation() -> str:
         ("患者预筛", tr("队列评估", "Cohort evaluation")),
         ("招募分析", tr("情景分析", "Scenario analysis")),
         ("历史记录", tr("历史记录", "History")),
-        ("验证证据", tr("质量控制", "Quality")),
+        ("验证证据", tr("审计治理", "Governance")),
     ]
     with st.container(key="top_navigation"):
         columns = st.columns([0.62, 0.76, 0.88, 0.9, 1.0, 1.0, 1.0, 0.82, 0.78], gap="small")

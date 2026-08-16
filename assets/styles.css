@@ -1203,7 +1203,7 @@ div[data-testid="stMetric"] {
 
 .ts-workflow-steps {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     align-items: stretch;
 }
 
@@ -1230,6 +1230,15 @@ div[data-testid="stMetric"] {
     text-align: center;
     background: #173B57;
     border: 1px solid #2D607B;
+}
+
+.ts-case-evidence-label {
+    margin-top: 1.3rem;
+    color: var(--ts-teal);
+    font-size: .63rem;
+    font-weight: 780;
+    letter-spacing: .1em;
+    text-align: center;
 }
 
 .ts-evidence-item b,
@@ -1305,6 +1314,64 @@ div[data-testid="stMetric"] {
 .ts-history-event time { color: var(--ts-subtle); }
 .ts-history-event b { color: var(--ts-ink); }
 .ts-history-event span { color: var(--ts-muted); }
+
+[class*="st-key-no_active_study"] {
+    max-width: 820px;
+    margin: 2rem auto 0;
+    padding: clamp(1.8rem, 4vw, 3.2rem);
+    background: #FFFFFF;
+    border: 1px solid var(--ts-line);
+    border-top: 4px solid var(--ts-teal);
+    border-radius: 4px;
+}
+
+.ts-empty-mark,
+[class*="st-key-workspace_stage_state"] > div > div > span {
+    color: var(--ts-teal);
+    font-size: .65rem;
+    font-weight: 780;
+    letter-spacing: .1em;
+}
+
+[class*="st-key-no_active_study"] h2,
+[class*="st-key-workspace_stage_state"] h2 {
+    margin: .55rem 0 .5rem;
+    color: var(--ts-ink);
+    font-size: 1.45rem;
+    letter-spacing: -.025em;
+}
+
+[class*="st-key-no_active_study"] p,
+[class*="st-key-workspace_stage_state"] p {
+    max-width: 690px;
+    margin: 0 0 1.3rem;
+    color: var(--ts-muted);
+    font-size: .82rem;
+    line-height: 1.7;
+}
+
+[class*="st-key-workspace_stage_state"] {
+    margin-top: 1rem;
+    padding: 1.5rem 1.6rem;
+    background: #FFFFFF;
+    border: 1px solid var(--ts-line);
+    border-left: 4px solid var(--ts-teal);
+    border-radius: 3px;
+}
+
+[class*="st-key-cohort_import_panel"][data-testid="stVerticalBlockBorderWrapper"],
+[class*="st-key-cohort_import_panel"] [data-testid="stVerticalBlockBorderWrapper"] {
+    background: #FFFFFF;
+    border-color: var(--ts-line) !important;
+    border-radius: 3px !important;
+}
+
+.ts-cohort-requirements b,
+.ts-cohort-requirements span,
+.ts-cohort-requirements small { display: block; }
+.ts-cohort-requirements b { color: var(--ts-ink); font-size: .85rem; }
+.ts-cohort-requirements span { margin-top: .3rem; color: var(--ts-muted); font-size: .73rem; line-height: 1.55; }
+.ts-cohort-requirements small { margin-top: .55rem; color: var(--ts-subtle); font-size: .64rem; }
 
 @media (max-width: 900px) {
     [class*="st-key-top_navigation"] [data-testid="stHorizontalBlock"] { min-width: 900px; }

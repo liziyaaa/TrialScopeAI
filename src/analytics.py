@@ -13,7 +13,7 @@ from .rules import match_dataframe, results_dataframe
 
 
 STATUS_LABELS = {
-    "eligible": "模拟符合",
+    "eligible": "规则符合",
     "ineligible": "不符合",
     "missing_data": "信息不足",
     "needs_review": "人工复核",
@@ -61,23 +61,19 @@ def missing_field_counts(results: Sequence[MatchResult]) -> pd.DataFrame:
     )
 
 
-FUNNEL_STAGES = [
-    ("候选队列", []),
-    ("年龄与诊断", ["I01", "I02"]),
-    ("吸烟史", ["I03"]),
-    ("肺功能", ["I04", "I05", "I06", "I07"]),
-    ("近期事件", ["E03", "E05", "E06"]),
-    ("其他可执行排除项", ["E02", "E04", "E07", "E08", "E09", "E10", "E11", "E12", "E13", "E15", "E16", "E17"]),
-]
-
-
 def build_funnel(patients: pd.DataFrame, criteria: Sequence[Criterion]) -> pd.DataFrame:
-    criterion_map = {criterion.criterion_id: criterion for criterion in criteria}
     active = patients.copy()
     rows = [{"stage": "候选队列", "count": len(active)}]
     accumulated: list[Criterion] = []
-    for label, ids in FUNNEL_STAGES[1:]:
-        accumulated.extend(criterion_map[item] for item in ids if item in criterion_map)
+    executable = [item for item in criteria if item.execution_status == "automated"]
+    visible = executable[:6]
+    stages: list[tuple[str, list[Criterion]]] = [
+        (f"{item.criterion_id} · {item.field or '标准'}", [item]) for item in visible
+    ]
+    if len(executable) > len(visible):
+        stages.append(("其余可执行标准", executable[len(visible):]))
+    for label, stage_criteria in stages:
+        accumulated.extend(stage_criteria)
         matches = match_dataframe(active, accumulated)
         keep_ids = [result.patient_id for result in matches if result.overall_status != "ineligible"]
         active = active[active["patient_id"].astype(str).isin(keep_ids)]
@@ -88,7 +84,7 @@ def build_funnel(patients: pd.DataFrame, criteria: Sequence[Criterion]) -> pd.Da
         for result in final_results
         if result.overall_status in {"eligible", "needs_review"}
     ]
-    rows.append({"stage": "模拟符合或待复核", "count": len(potential_ids)})
+    rows.append({"stage": "规则符合或待复核", "count": len(potential_ids)})
     return pd.DataFrame(rows)
 
 
@@ -97,16 +93,20 @@ def representation_table(patients: pd.DataFrame, results: Sequence[MatchResult])
     merged = patients.merge(result_frame[["patient_id", "overall_status"]], on="patient_id")
     selected = merged[merged["overall_status"].isin(["eligible", "needs_review"])]
     rows: list[dict[str, Any]] = []
-    for group_name, frame in [("候选队列", merged), ("模拟符合或待复核", selected)]:
-        rows.extend(
-            [
-                {"group": group_name, "metric": "平均年龄", "value": round(frame["age"].mean(), 1) if len(frame) else 0},
-                {"group": group_name, "metric": "女性占比", "value": round((frame["sex"] == "Female").mean() * 100, 1) if len(frame) else 0},
-                {"group": group_name, "metric": "65岁及以上占比", "value": round((frame["age"] >= 65).mean() * 100, 1) if len(frame) else 0},
-                {"group": group_name, "metric": "重度COPD占比", "value": round((frame["disease_severity"] == "severe").mean() * 100, 1) if len(frame) else 0},
-            ]
-        )
-    return pd.DataFrame(rows)
+    for group_name, frame in [("候选队列", merged), ("规则符合或待复核", selected)]:
+        if "age" in frame.columns:
+            age = pd.to_numeric(frame["age"], errors="coerce")
+            rows.extend([
+                {"group": group_name, "metric": "平均年龄", "value": round(age.mean(), 1) if len(frame) else 0},
+                {"group": group_name, "metric": "65岁及以上占比", "value": round((age >= 65).mean() * 100, 1) if len(frame) else 0},
+            ])
+        if "sex" in frame.columns:
+            female = frame["sex"].astype(str).str.lower().isin({"female", "f", "女"})
+            rows.append({"group": group_name, "metric": "女性占比", "value": round(female.mean() * 100, 1) if len(frame) else 0})
+        if "disease_severity" in frame.columns:
+            severe = frame["disease_severity"].astype(str).str.lower() == "severe"
+            rows.append({"group": group_name, "metric": "重度疾病占比", "value": round(severe.mean() * 100, 1) if len(frame) else 0})
+    return pd.DataFrame(rows, columns=["group", "metric", "value"])
 
 
 def apply_scenario(criteria: Sequence[Criterion], overrides: dict[str, Any]) -> list[Criterion]:
@@ -154,18 +154,19 @@ def _cohort_profile(
             "older_pct": 0.0,
             "severe_pct": 0.0,
         }
+    age = pd.to_numeric(selected["age"], errors="coerce") if "age" in selected else pd.Series(dtype=float)
+    female = selected["sex"].astype(str).str.lower().isin({"female", "f", "女"}) if "sex" in selected else pd.Series(dtype=bool)
+    severe = selected["disease_severity"].astype(str).str.lower() == "severe" if "disease_severity" in selected else pd.Series(dtype=bool)
     return {
-        "mean_age": round(float(selected["age"].mean()), 2),
-        "female_pct": round(float((selected["sex"] == "Female").mean() * 100), 2),
-        "older_pct": round(float((selected["age"] >= 65).mean() * 100), 2),
-        "severe_pct": round(
-            float((selected["disease_severity"] == "severe").mean() * 100), 2
-        ),
+        "mean_age": round(float(age.mean()), 2) if not age.empty else 0.0,
+        "female_pct": round(float(female.mean() * 100), 2) if not female.empty else 0.0,
+        "older_pct": round(float((age >= 65).mean() * 100), 2) if not age.empty else 0.0,
+        "severe_pct": round(float(severe.mean() * 100), 2) if not severe.empty else 0.0,
     }
 
 
 def _representation_gap(patients: pd.DataFrame, results: Sequence[MatchResult]) -> float:
-    """Average absolute percentage-point gap from the full synthetic cohort."""
+    """Average absolute percentage-point gap across available demographic fields."""
 
     all_results = [
         MatchResult(patient_id=str(row.patient_id), overall_status="eligible", evidences=[])
@@ -173,7 +174,15 @@ def _representation_gap(patients: pd.DataFrame, results: Sequence[MatchResult]) 
     ]
     population = _cohort_profile(patients, all_results)
     selected = _cohort_profile(patients, results)
-    dimensions = ["female_pct", "older_pct", "severe_pct"]
+    dimensions = []
+    if "sex" in patients:
+        dimensions.append("female_pct")
+    if "age" in patients:
+        dimensions.append("older_pct")
+    if "disease_severity" in patients:
+        dimensions.append("severe_pct")
+    if not dimensions:
+        return 0.0
     return round(
         sum(abs(selected[item] - population[item]) for item in dimensions) / len(dimensions),
         2,
@@ -303,9 +312,9 @@ def build_markdown_report(
 
 {source_title}
 
-## Synthetic cohort baseline
+## Imported cohort baseline
 
-- Synthetic records: {len(patients)}
+- Imported records: {len(patients)}
 - Rule-eligible: {counts.get('eligible', 0)}
 - Constraint not met: {counts.get('ineligible', 0)}
 - Data unresolved: {counts.get('missing_data', 0)}
@@ -317,7 +326,7 @@ def build_markdown_report(
 
 ## Decision boundary
 
-This brief uses public protocol criteria and synthetic records to validate a traceable decision workflow. It does not diagnose, enrol participants or recommend a protocol amendment. Medical, statistical, investigator and ethics review remain required for real decisions.
+This brief uses the active protocol and the cohort imported for this study. It does not diagnose, enrol participants or recommend a protocol amendment. Medical, statistical, investigator and ethics review remain required for real decisions.
 """
     return f"""# TrialScopeAI 招募可行性模拟摘要
 
@@ -327,7 +336,7 @@ This brief uses public protocol criteria and synthetic records to validate a tra
 
 ## 队列与结果
 
-- 合成候选患者：{len(patients)} 人
+- 候选记录：{len(patients)} 人
 - 模拟符合：{counts.get('eligible', 0)} 人
 - 不符合：{counts.get('ineligible', 0)} 人
 - 信息不足：{counts.get('missing_data', 0)} 人
@@ -339,5 +348,5 @@ This brief uses public protocol criteria and synthetic records to validate a tra
 
 ## 使用边界
 
-本报告仅基于公开试验标准与合成患者数据，用于方法验证和方案讨论，不构成诊断、入组决定或临床试验方案修改建议。所有真实决策均需由医学、统计、研究者及伦理人员审核。
+本报告基于当前研究方案与本会话导入的候选队列，用于方案评估和协作审核，不构成诊断、入组决定或临床试验方案修改建议。所有真实决策均需由医学、统计、研究者及伦理人员审核。
 """

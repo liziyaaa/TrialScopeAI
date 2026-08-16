@@ -28,7 +28,7 @@ def test_blockers_and_report_are_traceable(criteria):
     assert not blockers.empty
     assert blockers["criterion"].str.len().min() > 0
     report = build_markdown_report("GOLDEN-4", patients, results, criteria)
-    assert "合成候选患者：500" in report
+    assert "候选记录：500" in report
     assert "不构成诊断" in report
 
 
