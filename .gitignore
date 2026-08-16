@@ -22,6 +22,7 @@ uploads/
 tmp/
 .chrome-profile/
 output/*-review.png
+output/*.png
 
 # Streamlit runtime
 .streamlit/cache/
