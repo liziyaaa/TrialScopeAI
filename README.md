@@ -134,25 +134,6 @@ flowchart LR
 - 情景结果只是基于当前导入队列的规则模拟；
 - 真实数据接入必须经过合法授权、去标识化、医学验证和伦理审批。
 
-## 本地运行
-
-要求 Python 3.12。
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-streamlit run app.py
-```
-
-运行测试：
-
-```powershell
-python -m pip install -r requirements-dev.txt
-python -m pytest
-```
-
-敏感配置只放入本地或 Streamlit Secrets，不进入仓库。可参考 [`.streamlit/secrets.example.toml`](.streamlit/secrets.example.toml)。
 
 ## 项目结构
 
